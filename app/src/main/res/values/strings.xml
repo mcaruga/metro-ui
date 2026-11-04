@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Metro</string>
+    <string name="settings_name">Metro impostazioni</string>
+    <string name="kb_name">Metro tastiera</string>
+    <string name="notif_name">Metro contatori riquadri</string>
+    <string name="nav_name">Metro barra</string>
+    <string name="nav_desc">Mostra la barra indietro · start · cerca in stile Windows Phone in fondo allo schermo. Non legge il contenuto delle finestre.</string>
+    <string name="subtype_it">italiano</string>
+</resources>

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Metro {{NAME}}</title>
+<style>
+  :root { --accent: #e51400; --bg: #000; --fg: #fff; --sub: #9a9a9a; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font-family: "Segoe UI", "Selawik", system-ui, sans-serif; }
+  main { max-width: 560px; margin: 0 auto; padding: 32px 16px 48px; }
+  .app { font-size: 14px; letter-spacing: .08em; text-transform: uppercase; font-weight: 600; }
+  h1 { font-weight: 300; font-size: 56px; margin: 4px 0 24px; letter-spacing: -.02em; }
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; margin-bottom: 28px; }
+  .tiles i { background: var(--accent); aspect-ratio: 1; }
+  .tiles i.w { grid-column: span 2; aspect-ratio: auto; }
+  .tiles i:nth-child(3n) { opacity: .75; }
+  a.dl { display: block; background: var(--accent); color: #fff; text-decoration: none; padding: 18px 20px;
+         font-size: 22px; font-weight: 300; }
+  a.dl small { display: block; font-size: 14px; opacity: .85; margin-top: 2px; }
+  h2 { font-weight: 300; font-size: 30px; margin: 36px 0 8px; }
+  p, li { color: var(--sub); font-size: 16px; line-height: 1.45; }
+  ol { padding-left: 20px; }
+  code { color: var(--fg); font-size: 12px; word-break: break-all; }
+</style>
+</head>
+<body>
+<main>
+  <div class="app">metro</div>
+  <h1>versione {{NAME}}</h1>
+  <div class="tiles"><i class="w"></i><i></i><i></i><i></i><i></i><i class="w"></i></div>
+  <a class="dl" href="{{APK}}" download>scarica Metro<small>{{APK}} · {{SIZE}} MB</small></a>
+  <h2>novità</h2>
+  <p>{{NOTES}}</p>
+  <h2>prima installazione</h2>
+  <ol>
+    <li>Scarica l'APK e aprilo; consenti al browser di installare app.</li>
+    <li>Se Android blocca accesso notifiche o accessibilità ("impostazione con restrizioni"): Impostazioni → App → Metro → ⋮ → Consenti impostazioni con restrizioni.</li>
+    <li>Impostazioni → App → Scegli app predefinite → App Home → Metro.</li>
+  </ol>
+  <p>Dopo la prima volta gli aggiornamenti arrivano da soli: Metro controlla questo server ogni 3 ore.</p>
+  <p>sha256 <code>{{SHA}}</code></p>
+</main>
+</body>
+</html>
