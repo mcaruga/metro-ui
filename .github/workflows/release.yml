@@ -1,0 +1,60 @@
+# Signed release build from the repository secrets (the signing key's backup).
+# Manual run: Actions -> release -> Run workflow. With a METRO_PUBLISH_TOKEN secret (a token
+# allowed to write mcaruga/metro-ui-download) it also publishes the release and download page.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: "Novità della versione"
+        required: false
+        default: ""
+      publish:
+        description: "Pubblica su metro-ui-download"
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Restore signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.METRO_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.METRO_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.METRO_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.METRO_KEY_PASSWORD }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > metro-release.jks
+          printf 'storeFile=metro-release.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$STORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > keystore.properties
+
+      - name: Build signed release
+        run: ./gradlew --no-daemon -q assembleRelease
+
+      - name: Signing certificate
+        run: |
+          bt=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$bt/apksigner" verify --print-certs app/build/outputs/apk/release/app-release.apk | grep -E "DN|SHA-256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: metro-release
+          path: app/build/outputs/apk/release/app-release.apk
+
+      - name: Publish release and download page
+        if: ${{ inputs.publish }}
+        env:
+          GH_TOKEN: ${{ secrets.METRO_PUBLISH_TOKEN }}
+          METRO_GITHUB: mcaruga/metro-ui-download
+        run: |
+          [ -n "$GH_TOKEN" ] || { echo "METRO_PUBLISH_TOKEN secret missing"; exit 1; }
+          tools/publish.sh "${{ inputs.notes }}"
