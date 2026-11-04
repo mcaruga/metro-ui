@@ -28,6 +28,11 @@ class MetroApp : Application() {
         SCALED = dm.density * resources.configuration.fontScale
         Prefs.init(this)
         Metro.init(this)
+        // Never let the update machinery take the launcher down.
+        runCatching {
+            Updater.clearNotification(this)
+            Updater.schedule(this)
+        }
     }
 }
 
@@ -151,6 +156,13 @@ object Prefs {
     var autoUpdate: Boolean
         get() = b("auto_update", true)
         set(v) = put("auto_update", v)
+    /** Highest version already announced with a notification (one notification per version). */
+    var notifiedUpdate: Int
+        get() = sp.getInt("notified_update", 0)
+        set(v) = sp.edit().putInt("notified_update", v).apply()
+    var askedNotif: Boolean
+        get() = b("asked_notif", false)
+        set(v) = put("asked_notif", v)
     var lastUpdateCheck: Long
         get() = sp.getLong("update_checked", 0L)
         set(v) = sp.edit().putLong("update_checked", v).apply()

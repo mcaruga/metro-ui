@@ -200,6 +200,12 @@ class LauncherActivity : Activity(), TileGrid.Host, AppListPage.Host {
             // Once: without this the home gesture still goes to One UI Home.
             Prefs.askedHome = true
             h.postDelayed({ if (!isFinishing) HomeRole.request(this) }, 1200)
+        } else if (!Prefs.askedNotif && Build.VERSION.SDK_INT >= 33) {
+            // Once, for the "new version available" notification.
+            Prefs.askedNotif = true
+            if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                h.postDelayed({ if (!isFinishing) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 9) }, 1200)
+            }
         }
         grid.invalidateTiles()
     }

@@ -31,6 +31,10 @@ object Updater {
     class Release(val code: Int, val name: String, val apk: URL, val sha256: String?, val notes: String)
 
     private const val AUTO_EVERY = 3 * 60 * 60 * 1000L
+    private const val JOB_ID = 4201
+    private const val CHANNEL = "updates"
+    private const val NOTIF_ID = 4201
+    const val EXTRA_UPDATE = "com.mc.metro.UPDATE"
     @Volatile private var busy = false
 
     private fun base(): String = Prefs.updateUrl.trim().let { if (it.endsWith("/")) it else "$it/" }
@@ -60,6 +64,59 @@ object Updater {
             j.optString("notes"),
         )
         return if (r.code > BuildConfig.VERSION_CODE) r else null
+    }
+
+    /**
+     * Background check every 3 hours (with network), also when Metro is not open: a new version
+     * posts a notification. Called at app start; cancelled when automatic checks are off.
+     */
+    fun schedule(c: Context) {
+        val js = c.getSystemService(android.app.job.JobScheduler::class.java) ?: return
+        if (!Prefs.autoUpdate) {
+            js.cancel(JOB_ID)
+            return
+        }
+        if (js.getPendingJob(JOB_ID) != null) return
+        val job = android.app.job.JobInfo.Builder(JOB_ID, android.content.ComponentName(c, UpdateJob::class.java))
+            .setRequiredNetworkType(android.app.job.JobInfo.NETWORK_TYPE_ANY)
+            .setPeriodic(AUTO_EVERY, 60 * 60 * 1000L)
+            .setPersisted(true)
+            .build()
+        js.schedule(job)
+    }
+
+    /** Job body: notify once per new version. Network: off the main thread. */
+    fun backgroundCheck(c: Context) {
+        val r = try { check() } catch (e: Exception) { null } ?: return
+        if (r.code <= Prefs.notifiedUpdate) return
+        notify(c, r)
+        Prefs.notifiedUpdate = r.code
+    }
+
+    fun notify(c: Context, r: Release) {
+        val nm = c.getSystemService(android.app.NotificationManager::class.java) ?: return
+        nm.createNotificationChannel(android.app.NotificationChannel(CHANNEL, "aggiornamenti Metro", android.app.NotificationManager.IMPORTANCE_DEFAULT))
+        if (Build.VERSION.SDK_INT >= 33 && c.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) != android.content.pm.PackageManager.PERMISSION_GRANTED) return
+        val open = Intent(c, SettingsActivity::class.java)
+            .putExtra(EXTRA_UPDATE, true)
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        val pi = PendingIntent.getActivity(c, 0, open, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val n = android.app.Notification.Builder(c, CHANNEL)
+            .setSmallIcon(R.drawable.ic_stat_metro)
+            .setColor(Prefs.accent)
+            .setContentTitle("Metro ${r.name} disponibile")
+            .setContentText(r.notes.ifBlank { "tocca per scaricare e installare l'aggiornamento" })
+            .setStyle(android.app.Notification.BigTextStyle().bigText(
+                (if (r.notes.isNotBlank()) r.notes + "\n\n" else "") + "Tocca per scaricare e installare."))
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .build()
+        nm.notify(NOTIF_ID, n)
+    }
+
+    /** Clears the notification once this version is the latest one installed. */
+    fun clearNotification(c: Context) {
+        if (Prefs.notifiedUpdate <= BuildConfig.VERSION_CODE) c.getSystemService(android.app.NotificationManager::class.java)?.cancel(NOTIF_ID)
     }
 
     /** Silent background check from the start screen; offers the update when there is one. */
@@ -194,6 +251,19 @@ object Updater {
             s.commit(p.intentSender)
         }
     }
+}
+
+/** Periodic background check scheduled by [Updater.schedule]. */
+class UpdateJob : android.app.job.JobService() {
+    override fun onStartJob(params: android.app.job.JobParameters): Boolean {
+        Thread {
+            Updater.backgroundCheck(applicationContext)
+            jobFinished(params, false)
+        }.start()
+        return true
+    }
+
+    override fun onStopJob(params: android.app.job.JobParameters) = true
 }
 
 /** Result of the install session: shows the system confirmation when needed, reports failures. */

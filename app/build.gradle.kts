@@ -19,8 +19,8 @@ android {
         applicationId = "com.mc.metro"
         minSdk = 30
         targetSdk = 34
-        versionCode = 5
-        versionName = "0.5"
+        versionCode = 6
+        versionName = "0.6"
     }
 
     signingConfigs {

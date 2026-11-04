@@ -38,6 +38,19 @@ class SettingsActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         build()
+        if (savedInstanceState == null) fromNotification(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        fromNotification(intent)
+    }
+
+    /** Tapped "Metro X disponibile": check again and show the update prompt. */
+    private fun fromNotification(i: Intent?) {
+        if (i?.getBooleanExtra(Updater.EXTRA_UPDATE, false) != true) return
+        i.removeExtra(Updater.EXTRA_UPDATE)
+        checkUpdate()
     }
 
     override fun onResume() {
@@ -178,7 +191,19 @@ class SettingsActivity : Activity() {
 
         header("aggiornamenti")
         button("cerca aggiornamenti", { updateStatus ?: "versione ${BuildConfig.VERSION_NAME} · tocca per controllare" }) { checkUpdate() }
-        toggle("controlla automaticamente", "dalla schermata start, ogni 3 ore", { Prefs.autoUpdate }) { Prefs.autoUpdate = it }
+        toggle("controlla automaticamente", "ogni 3 ore, anche con Metro chiusa: una notifica avvisa della nuova versione", { Prefs.autoUpdate }) {
+            Prefs.autoUpdate = it
+            runCatching { Updater.schedule(this) }
+        }
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            button("notifiche aggiornamenti", { if (notifAllowed()) "consentite" else "bloccate · tocca per consentirle" }) {
+                if (notifAllowed()) {
+                    startActivity(Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName))
+                } else {
+                    requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 9)
+                }
+            }
+        }
         button("server aggiornamenti", { Prefs.updateUrl }) { urlDialog() }
 
         header("info")
@@ -186,6 +211,9 @@ class SettingsActivity : Activity() {
     }
 
     private var updateStatus: String? = null
+
+    private fun notifAllowed() = android.os.Build.VERSION.SDK_INT < 33 ||
+        checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == android.content.pm.PackageManager.PERMISSION_GRANTED
 
     private fun checkUpdate() {
         updateStatus = "controllo…"
