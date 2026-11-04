@@ -20,7 +20,9 @@ import android.view.accessibility.AccessibilityEvent
 
 /**
  * Optional Windows Phone navigation bar (back · start · search), drawn as an accessibility
- * overlay, and host of the Metro action center. Both are off by default.
+ * overlay exactly over the system navigation bar, and host of the Metro action center. Both are
+ * off by default. An overlay cannot push apps up, so the bar only shows with One UI's button
+ * navigation, whose bar is tall enough; with gestures it would cover the apps' bottom menus.
  */
 class NavBarService : AccessibilityService(), SharedPreferences.OnSharedPreferenceChangeListener {
     private var bar: View? = null
@@ -29,7 +31,14 @@ class NavBarService : AccessibilityService(), SharedPreferences.OnSharedPreferen
 
     companion object {
         @Volatile var running = false
-        val height get() = 48.dp
+
+        /** Height of the system navigation bar; under 32 dp it is the gesture handle only. */
+        fun systemBarHeight(c: Context): Int = runCatching {
+            c.getSystemService(WindowManager::class.java).currentWindowMetrics.windowInsets
+                .getInsets(android.view.WindowInsets.Type.navigationBars()).bottom
+        }.getOrDefault(0)
+
+        fun buttonNavigation(c: Context) = systemBarHeight(c) >= 32.dp
 
         fun isEnabled(c: Context): Boolean {
             val s = Settings.Secure.getString(c.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
@@ -73,11 +82,15 @@ class NavBarService : AccessibilityService(), SharedPreferences.OnSharedPreferen
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
+        // Switching between gestures and buttons changes the system bar: follow it.
+        hide()
+        sync()
         center?.onConfigurationChanged()
     }
 
     private fun sync() {
-        if (Prefs.navBar && bar == null) show() else if (!Prefs.navBar) hide()
+        val want = Prefs.navBar && buttonNavigation(this)
+        if (want && bar == null) show() else if (!want) hide()
     }
 
     private fun show() {
@@ -94,7 +107,7 @@ class NavBarService : AccessibilityService(), SharedPreferences.OnSharedPreferen
         }
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
-            height,
+            systemBarHeight(this),
             WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,

@@ -6,6 +6,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ComposeShader
 import android.graphics.LinearGradient
+import android.graphics.Path
 import android.graphics.Paint
 import android.graphics.PorterDuff
 import android.graphics.RectF
@@ -50,22 +51,116 @@ object Glyphs {
                 cv.drawCircle(cx - s * 0.1f, cy - s * 0.1f, r, p)
                 cv.drawLine(cx + r * 0.6f, cy + r * 0.6f, cx + h, cy + h, p)
             }
-            START -> {
-                val old = p.style
-                p.style = Paint.Style.FILL
-                val g = s * 0.08f
-                val q = (s - g) / 2
-                cv.drawRect(cx - h, cy - h, cx - h + q, cy - h + q, p)
-                cv.drawRect(cx + g / 2, cy - h, cx + h, cy - h + q, p)
-                cv.drawRect(cx - h, cy + g / 2, cx - h + q, cy + h, p)
-                cv.drawRect(cx + g / 2, cy + g / 2, cx + h, cy + h, p)
-                p.style = old
-            }
+            START -> Logos.draw(cv, Prefs.startLogo, cx, cy, s, p)
             CHECK -> {
                 cv.drawLine(cx - h, cy, cx - h * 0.2f, cy + h * 0.7f, p)
                 cv.drawLine(cx - h * 0.2f, cy + h * 0.7f, cx + h, cy - h * 0.6f, p)
             }
         }
+    }
+}
+
+/** Start button logos: the Windows Phone squares and simple filled shapes. */
+object Logos {
+    val NAMES = arrayOf(
+        "finestra", "cerchio", "quadrato", "rombo", "triangolo", "esagono", "stella", "cuore",
+        "casa", "fulmine", "goccia", "luna", "fiore", "più", "anello", "griglia",
+    )
+    private val path = Path()
+    private val cut = Path()
+
+    private fun poly(cx: Float, cy: Float, h: Float, vararg pts: Float) {
+        path.moveTo(cx + pts[0] * h, cy + pts[1] * h)
+        var i = 2
+        while (i < pts.size) { path.lineTo(cx + pts[i] * h, cy + pts[i + 1] * h); i += 2 }
+        path.close()
+    }
+
+    private fun star(cx: Float, cy: Float, r: Float, inner: Float, n: Int) {
+        for (k in 0 until n * 2) {
+            val a = -Math.PI / 2 + Math.PI / n * k
+            val rr = if (k % 2 == 0) r else inner
+            val x = cx + rr * kotlin.math.cos(a).toFloat()
+            val y = cy + rr * kotlin.math.sin(a).toFloat()
+            if (k == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        }
+        path.close()
+    }
+
+    /** Filled logo [id] in an [s]-sized box centred on (cx, cy); keeps [p]'s style. */
+    fun draw(cv: Canvas, id: Int, cx: Float, cy: Float, s: Float, p: Paint) {
+        val old = p.style
+        p.style = Paint.Style.FILL
+        val h = s / 2
+        path.reset()
+        cut.reset()
+        when (id) {
+            1 -> path.addCircle(cx, cy, h * 0.95f, Path.Direction.CW)
+            2 -> path.addRect(cx - h * 0.85f, cy - h * 0.85f, cx + h * 0.85f, cy + h * 0.85f, Path.Direction.CW)
+            3 -> poly(cx, cy, h, 0f, -1.05f, 1.05f, 0f, 0f, 1.05f, -1.05f, 0f)
+            4 -> poly(cx, cy, h, 0f, -1f, 1.05f, 0.85f, -1.05f, 0.85f)
+            5 -> star(cx, cy, h, h, 3)
+            6 -> star(cx, cy + h * 0.08f, h * 1.05f, h * 0.44f, 5)
+            7 -> {
+                path.moveTo(cx, cy + h * 0.9f)
+                path.cubicTo(cx - h * 1.5f, cy - h * 0.1f, cx - h * 0.6f, cy - h * 1.1f, cx, cy - h * 0.4f)
+                path.cubicTo(cx + h * 0.6f, cy - h * 1.1f, cx + h * 1.5f, cy - h * 0.1f, cx, cy + h * 0.9f)
+                path.close()
+            }
+            8 -> {
+                poly(cx, cy, h, 0f, -1f, 1f, -0.05f, 0.72f, -0.05f, 0.72f, 0.95f, -0.72f, 0.95f, -0.72f, -0.05f, -1f, -0.05f)
+                cut.addRect(cx - h * 0.2f, cy + h * 0.35f, cx + h * 0.2f, cy + h * 0.95f, Path.Direction.CW)
+                path.op(cut, Path.Op.DIFFERENCE)
+            }
+            9 -> poly(cx, cy, h, 0.3f, -1f, -0.6f, 0.12f, -0.05f, 0.12f, -0.3f, 1f, 0.6f, -0.16f, 0.05f, -0.16f)
+            10 -> {
+                poly(cx, cy, h, 0f, -1f, 0.6f, 0.05f, -0.6f, 0.05f)
+                cut.addCircle(cx, cy + h * 0.3f, h * 0.68f, Path.Direction.CW)
+                path.op(cut, Path.Op.UNION)
+            }
+            11 -> {
+                path.addCircle(cx, cy, h * 0.95f, Path.Direction.CW)
+                cut.addCircle(cx + h * 0.5f, cy - h * 0.35f, h * 0.78f, Path.Direction.CW)
+                path.op(cut, Path.Op.DIFFERENCE)
+            }
+            12 -> {
+                val r = h * 0.46f
+                path.addCircle(cx - r, cy, r, Path.Direction.CW)
+                path.addCircle(cx + r, cy, r, Path.Direction.CW)
+                path.addCircle(cx, cy - r, r, Path.Direction.CW)
+                path.addCircle(cx, cy + r, r, Path.Direction.CW)
+            }
+            13 -> {
+                val t = h * 0.3f
+                path.addRect(cx - t, cy - h, cx + t, cy + h, Path.Direction.CW)
+                cut.addRect(cx - h, cy - t, cx + h, cy + t, Path.Direction.CW)
+                path.op(cut, Path.Op.UNION)
+            }
+            14 -> {
+                path.addCircle(cx, cy, h * 0.95f, Path.Direction.CW)
+                cut.addCircle(cx, cy, h * 0.52f, Path.Direction.CW)
+                path.op(cut, Path.Op.DIFFERENCE)
+            }
+            15 -> {
+                val g = s * 0.08f
+                val q = (s - g * 2) / 3
+                for (i in 0..2) for (j in 0..2) {
+                    val x = cx - h + i * (q + g)
+                    val y = cy - h + j * (q + g)
+                    path.addRect(x, y, x + q, y + q, Path.Direction.CW)
+                }
+            }
+            else -> {
+                val g = s * 0.08f
+                val q = (s - g) / 2
+                path.addRect(cx - h, cy - h, cx - h + q, cy - h + q, Path.Direction.CW)
+                path.addRect(cx + g / 2, cy - h, cx + h, cy - h + q, Path.Direction.CW)
+                path.addRect(cx - h, cy + g / 2, cx - h + q, cy + h, Path.Direction.CW)
+                path.addRect(cx + g / 2, cy + g / 2, cx + h, cy + h, Path.Direction.CW)
+            }
+        }
+        cv.drawPath(path, p)
+        p.style = old
     }
 }
 

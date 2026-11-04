@@ -142,6 +142,10 @@ object Prefs {
     var navBar: Boolean
         get() = b("nav_bar", false)
         set(v) = put("nav_bar", v)
+    /** Logo on the start button of the navigation bar (index into Logos.NAMES). */
+    var startLogo: Int
+        get() = sp.getInt("start_logo", 0)
+        set(v) { sp.edit().putInt("start_logo", v).apply(); bump() }
     /** Metro action center in place of the One UI shade (swipe down from the status bar). */
     var actionCenter: Boolean
         get() = b("action_center", false)

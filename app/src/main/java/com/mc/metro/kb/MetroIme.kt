@@ -68,7 +68,6 @@ class MetroIme : InputMethodService() {
         mode = if (numeric || phone) NUM else ABC
         kv.applyTheme()
         kv.enterLabel = enterLabel(info)
-        kv.extraBottom = if (Prefs.navBar && NavBarService.running) NavBarService.height else 0
         kv.shift = 0
         autoShifted = false
         setLayout()

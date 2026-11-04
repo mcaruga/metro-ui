@@ -170,15 +170,20 @@ class SettingsActivity : Activity() {
         }
         toggle(
             "barra windows phone",
-            "indietro · start · cerca in fondo allo schermo. Lascia disattivato per usare le gesture di One UI.",
+            "indietro · start · cerca al posto dei pulsanti di One UI, alla stessa altezza, senza coprire le app. Serve la navigazione a pulsanti: Impostazioni › Display › Barra di navigazione › Pulsanti. Con le gesture la barra resta nascosta.",
             { Prefs.navBar },
         ) {
             Prefs.navBar = it
             if (it && !NavBarService.isEnabled(this)) {
                 Toast.makeText(this, "attiva \"Metro barra e centro notifiche\" in App installate", Toast.LENGTH_LONG).show()
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            } else if (it && !NavBarService.buttonNavigation(this)) {
+                Toast.makeText(this, "con le gesture la barra coprirebbe le app: scegli Pulsanti in Display › Barra di navigazione", Toast.LENGTH_LONG).show()
+                startActivity(Intent(Settings.ACTION_DISPLAY_SETTINGS))
             }
         }
+
+        logoRow()
 
         header("tastiera")
         button("attiva tastiera metro", { if (imeEnabled()) "attivata" else "tocca e abilita \"Metro tastiera\"" }) {
@@ -519,6 +524,23 @@ class SettingsActivity : Activity() {
         col.addView(row)
     }
 
+    /** Start logo row: the current logo on an accent square, tap to pick another. */
+    private fun logoRow() {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, 10.dp, 0, 10.dp)
+            isClickable = true
+            setOnClickListener { LogoDialog(this@SettingsActivity) { Prefs.startLogo = it; rebuild() }.show() }
+        }
+        row.addView(LogoView(this, Prefs.startLogo), LinearLayout.LayoutParams(56.dp, 56.dp))
+        val txt = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(14.dp, 0, 0, 0) }
+        txt.addView(label("logo start", 20f, Metro.fg, Metro.regular))
+        txt.addView(label(Logos.NAMES[Prefs.startLogo.coerceIn(0, Logos.NAMES.size - 1)] + " · tasto centrale della barra windows phone", 15f, Metro.sub, Metro.regular).apply { maxLines = 2 })
+        row.addView(txt, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        col.addView(row)
+    }
+
     /** Swatch row for the tile text colour: a sample tile in the accent with "Aa" in that colour. */
     private fun colorRow(title: String, desc: String, c: Int, onClick: () -> Unit) {
         val row = LinearLayout(this).apply {
@@ -757,5 +779,54 @@ class ColorDialog(
     private fun pick(c: Int) {
         dismiss()
         done(c)
+    }
+}
+
+/** A logo in white on an accent square, with a check when [selected]. */
+class LogoView(c: android.content.Context, private val logo: Int, private val selected: Boolean = false) : View(c) {
+    private val p = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+    private val ring = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+        style = android.graphics.Paint.Style.STROKE
+        strokeWidth = 3.dpf
+        color = Color.WHITE
+    }
+
+    override fun onDraw(cv: android.graphics.Canvas) {
+        cv.drawColor(Prefs.accent)
+        Logos.draw(cv, logo, width / 2f, height / 2f, width * 0.42f, p)
+        if (selected) cv.drawRect(1.5f.dpf, 1.5f.dpf, width - 1.5f.dpf, height - 1.5f.dpf, ring)
+    }
+}
+
+/** Grid of start logos with their names. */
+class LogoDialog(private val a: Activity, private val done: (Int) -> Unit) : Dialog(a, android.R.style.Theme_Material_NoActionBar) {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        window?.setBackgroundDrawable(ColorDrawable(Metro.bg))
+        window?.setDecorFitsSystemWindows(false)
+        val col = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp, 0, 20.dp, 0) }
+        val sv = ScrollView(context).apply { addView(col); isVerticalScrollBarEnabled = false; clipToPadding = false }
+        sv.setOnApplyWindowInsetsListener { v, ins ->
+            val b = ins.getInsets(WindowInsets.Type.systemBars())
+            v.setPadding(0, b.top + 12.dp, 0, b.bottom + 16.dp)
+            ins
+        }
+        setContentView(sv)
+        col.addView(context.label("START", 14f, Metro.fg, Metro.semibold))
+        col.addView(context.label("logo", 40f).apply { setPadding(0, 0, 0, 12.dp) })
+        val grid = GridLayout(context).apply { columnCount = 4 }
+        val size = (a.resources.displayMetrics.widthPixels - 40.dp) / 4 - 10.dp
+        for (i in Logos.NAMES.indices) {
+            val cell = LinearLayout(context).apply {
+                orientation = LinearLayout.VERTICAL
+                isClickable = true
+                contentDescription = Logos.NAMES[i]
+                setOnClickListener { done(i); dismiss() }
+            }
+            cell.addView(LogoView(context, i, i == Prefs.startLogo), LinearLayout.LayoutParams(size, size))
+            cell.addView(context.label(Logos.NAMES[i], 14f, Metro.fg, Metro.regular).apply { setPadding(0, 4.dp, 0, 0) })
+            grid.addView(cell, GridLayout.LayoutParams().apply { setMargins(5.dp, 5.dp, 5.dp, 10.dp) })
+        }
+        col.addView(grid)
     }
 }

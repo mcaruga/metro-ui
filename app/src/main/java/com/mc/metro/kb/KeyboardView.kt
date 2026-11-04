@@ -32,8 +32,6 @@ class KeyboardView(c: Context, private val ime: MetroIme) : View(c) {
         set(v) { field = v; invalidate() }
     var suggestions: List<String> = emptyList()
         set(v) { field = v; invalidate() }
-    var extraBottom = 0
-        set(v) { field = v; requestLayout() }
     var letterMode = true
 
     private val stripH = 44.dp
@@ -100,7 +98,7 @@ class KeyboardView(c: Context, private val ime: MetroIme) : View(c) {
     }
 
     override fun onMeasure(ws: Int, hs: Int) {
-        setMeasuredDimension(MeasureSpec.getSize(ws), stripH + rows.size * rowH + sysBottom + extraBottom)
+        setMeasuredDimension(MeasureSpec.getSize(ws), stripH + rows.size * rowH + sysBottom)
     }
 
     override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) = layoutKeys()
