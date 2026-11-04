@@ -128,7 +128,7 @@ object Prefs {
 
     /** Folder on the update server holding version.json and the APK. */
     var updateUrl: String
-        get() = sp.getString("update_url", null) ?: "http://192.168.1.18/metro/"
+        get() = sp.getString("update_url", null) ?: "https://github.com/mcaruga/metro-ui-download/releases/latest/download/"
         set(v) = sp.edit().putString("update_url", v).apply()
     var autoUpdate: Boolean
         get() = b("auto_update", true)

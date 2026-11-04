@@ -167,7 +167,7 @@ class SettingsActivity : Activity() {
 
         header("aggiornamenti")
         button("cerca aggiornamenti", { updateStatus ?: "versione ${BuildConfig.VERSION_NAME} · tocca per controllare" }) { checkUpdate() }
-        toggle("controlla automaticamente", "dalla schermata start, ogni 3 ore, quando il server è raggiungibile", { Prefs.autoUpdate }) { Prefs.autoUpdate = it }
+        toggle("controlla automaticamente", "dalla schermata start, ogni 3 ore", { Prefs.autoUpdate }) { Prefs.autoUpdate = it }
         button("server aggiornamenti", { Prefs.updateUrl }) { urlDialog() }
 
         header("info")
@@ -203,7 +203,7 @@ class SettingsActivity : Activity() {
             setPadding(24.dp, 24.dp, 24.dp, 20.dp)
         }
         box.addView(label("server aggiornamenti", 28f))
-        box.addView(label("cartella con version.json e l'APK. HTTP solo per 192.168.1.18, altrove serve HTTPS.", 14f, Metro.sub, Metro.regular).apply { maxLines = 3 })
+        box.addView(label("cartella con version.json e l'APK: GitHub Releases o il tuo server. HTTP solo per 192.168.1.18, altrove serve HTTPS.", 14f, Metro.sub, Metro.regular).apply { maxLines = 3 })
         val et = EditText(this).apply {
             setText(Prefs.updateUrl)
             textSize = 16f
