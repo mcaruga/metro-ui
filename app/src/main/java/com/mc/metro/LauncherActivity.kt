@@ -196,6 +196,11 @@ class LauncherActivity : Activity(), TileGrid.Host, AppListPage.Host {
         h.postDelayed(flipper, 1800)
         Live.fx = true
         Updater.autoCheck(this)
+        if (!Prefs.askedHome && !HomeRole.isDefault(this)) {
+            // Once: without this the home gesture still goes to One UI Home.
+            Prefs.askedHome = true
+            h.postDelayed({ if (!isFinishing) HomeRole.request(this) }, 1200)
+        }
         grid.invalidateTiles()
     }
 
@@ -271,8 +276,10 @@ class LauncherActivity : Activity(), TileGrid.Host, AppListPage.Host {
             }
             Tile.PHOTOS -> when {
                 !Live.has(this, Live.photoPerm) -> requestPermissions(arrayOf(Live.photoPerm), 3)
+                v.photoUri != null -> openPhoto(v.photoUri!!, e, v)
                 e != null -> launchApp(e, v)
             }
+            Tile.EMPTY -> {}
             Tile.CALENDAR -> when {
                 !Live.has(this, Manifest.permission.READ_CALENDAR) -> requestPermissions(arrayOf(Manifest.permission.READ_CALENDAR), 4)
                 e != null -> launchApp(e, v)
@@ -310,20 +317,46 @@ class LauncherActivity : Activity(), TileGrid.Host, AppListPage.Host {
     // ---- launch, turnstile, splash -----------------------------------------------------------
 
     private fun launchApp(e: AppEntry, from: View) {
-        if (launching) return
         val r = Rect()
         from.getGlobalVisibleRect(r)
+        launchWith(from, e) { start(e, r) }
+    }
+
+    /** Turnstile out, optional splash with [splashFor]'s glyph, then [go]. */
+    private fun launchWith(from: View, splashFor: AppEntry?, go: () -> Unit) {
+        if (launching) return
+        val splash = Prefs.splash && splashFor != null
         if (!Prefs.animations) {
-            if (Prefs.splash) showSplash(e)
-            start(e, r)
+            if (splash) showSplash(splashFor!!)
+            go()
             return
         }
         launching = true
         val out = turnstileOut(from)
         h.postDelayed({
-            if (Prefs.splash) showSplash(e)
-            h.postDelayed({ start(e, r) }, if (Prefs.splash) 200L else 0L)
+            if (splash) showSplash(splashFor!!)
+            h.postDelayed(go, if (splash) 200L else 0L)
         }, out)
+    }
+
+    /** The photo shown on the photo tile, in the gallery (the tile's app first, any viewer otherwise). */
+    private fun openPhoto(uri: Uri, gallery: AppEntry?, from: View) {
+        val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, "image/*")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        val i = if (gallery != null && Intent(view).setPackage(gallery.pkg).resolveActivity(packageManager) != null) {
+            Intent(view).setPackage(gallery.pkg)
+        } else view
+        launchWith(from, gallery) {
+            returning = true
+            try {
+                startActivity(i, ActivityOptions.makeCustomAnimation(this, android.R.anim.fade_in, android.R.anim.fade_out).toBundle())
+            } catch (ex: Exception) {
+                Toast.makeText(this, "nessuna app per aprire la foto", Toast.LENGTH_SHORT).show()
+                returning = false
+                launching = false
+                restoreFromLaunch(true)
+            }
+        }
     }
 
     private fun start(e: AppEntry, r: Rect) {
@@ -391,7 +424,10 @@ class LauncherActivity : Activity(), TileGrid.Host, AppListPage.Host {
         splash?.let { root.removeView(it) }
         val v = FrameLayout(this).apply { setBackgroundColor(Prefs.accent); isClickable = true }
         val size = (96 * Prefs.iconScale).dp
-        val iv = ImageView(this).apply { setImageBitmap(Apps.icon(e, size, true)) }
+        val iv = ImageView(this).apply {
+            setImageBitmap(Apps.icon(e, size, true))
+            if (Prefs.tileFg != android.graphics.Color.WHITE) setColorFilter(Prefs.tileFg, android.graphics.PorterDuff.Mode.SRC_IN)
+        }
         v.addView(iv, FrameLayout.LayoutParams(size, size, Gravity.CENTER))
         root.addView(v, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT))
         if (Prefs.animations) {

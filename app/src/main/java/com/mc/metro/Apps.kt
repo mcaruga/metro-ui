@@ -231,3 +231,25 @@ object Apps {
         (la ?: c.getSystemService(LauncherApps::class.java)).startAppDetailsActivity(e.component, e.user, null, null)
     }
 }
+
+/** Metro as the default Home app, so the home gesture lands on Start instead of One UI Home. */
+object HomeRole {
+    fun isDefault(c: Context): Boolean {
+        val rm = c.getSystemService(android.app.role.RoleManager::class.java)
+        if (rm != null && rm.isRoleAvailable(android.app.role.RoleManager.ROLE_HOME)) return rm.isRoleHeld(android.app.role.RoleManager.ROLE_HOME)
+        val i = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+        return c.packageManager.resolveActivity(i, 0)?.activityInfo?.packageName == c.packageName
+    }
+
+    /** System "set as default Home" dialog; the Home settings screen when that is not possible. */
+    fun request(a: android.app.Activity) {
+        val rm = a.getSystemService(android.app.role.RoleManager::class.java)
+        try {
+            if (rm != null && rm.isRoleAvailable(android.app.role.RoleManager.ROLE_HOME)) {
+                a.startActivityForResult(rm.createRequestRoleIntent(android.app.role.RoleManager.ROLE_HOME), 77)
+                return
+            }
+        } catch (e: Exception) { }
+        a.startActivity(Intent(android.provider.Settings.ACTION_HOME_SETTINGS))
+    }
+}

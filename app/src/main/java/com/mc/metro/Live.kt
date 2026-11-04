@@ -116,17 +116,18 @@ object Live {
         photos = out
     }
 
-    fun loadPhoto(c: Context, w: Int, h: Int, cb: (Bitmap?) -> Unit) {
+    /** A random photo scaled to about w x h, with its MediaStore uri (to open it on tap). */
+    fun loadPhoto(c: Context, w: Int, h: Int, cb: (Uri?, Bitmap?) -> Unit) {
         val list = photos
         if (list.isEmpty()) {
-            cb(null)
+            cb(null, null)
             return
         }
         val uri = list.random()
         val s = max(w, h).coerceAtLeast(64)
         bg.execute {
             val b = try { c.contentResolver.loadThumbnail(uri, Size(s, s), null) } catch (e: Exception) { null }
-            main.post { cb(b) }
+            main.post { cb(uri, b) }
         }
     }
 

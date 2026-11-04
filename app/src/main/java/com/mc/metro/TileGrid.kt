@@ -155,6 +155,7 @@ class TileGrid(c: Context, private val host: Host) : ViewGroup(c) {
         if (!editing) {
             editing = true
             host.onEditChanged(true)
+            views.forEach { it.invalidate() }
         }
         select(v)
         startDrag(v, v.lastRawX, v.lastRawY)
@@ -170,6 +171,7 @@ class TileGrid(c: Context, private val host: Host) : ViewGroup(c) {
         select(null)
         TileStore.save()
         host.onEditChanged(false)
+        views.forEach { it.invalidate() }
     }
 
     private fun select(v: TileView?) {

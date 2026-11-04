@@ -43,6 +43,8 @@ class AppListPage(c: Context, private val host: Host) : FrameLayout(c) {
     private var searching = false
     private var topInset = 0
     private var bottomInset = 0
+    private val alphaBar = AlphaBar(c)
+    private val bubble = TextView(c)
 
     init {
         column.orientation = LinearLayout.VERTICAL
@@ -105,19 +107,34 @@ class AppListPage(c: Context, private val host: Host) : FrameLayout(c) {
         }
         column.addView(list, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         addView(column, LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
+        addView(alphaBar, LayoutParams(BAR_W, LayoutParams.MATCH_PARENT, Gravity.END))
+        bubble.apply {
+            textSize = 54f
+            typeface = Metro.light
+            setTextColor(0xFFFFFFFF.toInt())
+            setBackgroundColor(Prefs.accent)
+            gravity = Gravity.BOTTOM or Gravity.START
+            setPadding(12.dp, 0, 0, 4.dp)
+            visibility = View.INVISIBLE
+            elevation = 8.dpf
+        }
+        addView(bubble, LayoutParams(88.dp, 88.dp, Gravity.END or Gravity.TOP).apply { rightMargin = BAR_W + 36.dp })
     }
 
     fun setInsets(top: Int, bottom: Int) {
         topInset = top
         bottomInset = bottom
         column.setPadding(0, top + 8.dp, 0, 0)
-        list.setPadding(0, 0, 0, bottom + 16.dp)
+        list.setPadding(0, 0, BAR_W - 8.dp, bottom + 16.dp)
+        (alphaBar.layoutParams as LayoutParams).apply { topMargin = top + 8.dp + 64.dp; bottomMargin = bottom + 8.dp }
+        alphaBar.requestLayout()
         jump?.setPadding(0, top, 0, bottom)
     }
 
     fun reload() {
         rows = build(search.text?.toString().orEmpty())
         adapter.notifyDataSetChanged()
+        alphaBar.have = rows.filterIsInstance<String>().toSet()
     }
 
     private fun build(q: String): List<Any> {
@@ -143,6 +160,7 @@ class AppListPage(c: Context, private val host: Host) : FrameLayout(c) {
         searching = true
         searchBtn.visibility = View.GONE
         search.visibility = View.VISIBLE
+        alphaBar.visibility = View.GONE
         search.requestFocus()
         post { context.getSystemService(InputMethodManager::class.java)?.showSoftInput(search, 0) }
     }
@@ -152,6 +170,7 @@ class AppListPage(c: Context, private val host: Host) : FrameLayout(c) {
         search.setText("")
         search.visibility = View.GONE
         searchBtn.visibility = View.VISIBLE
+        alphaBar.visibility = View.VISIBLE
         context.getSystemService(InputMethodManager::class.java)?.hideSoftInputFromWindow(search.windowToken, 0)
         search.clearFocus()
     }
@@ -199,6 +218,126 @@ class AppListPage(c: Context, private val host: Host) : FrameLayout(c) {
             ov.scaleX = 1.15f
             ov.scaleY = 1.15f
             ov.an(180).alpha(1f).scaleX(1f).scaleY(1f).start()
+        }
+    }
+
+    // ---- alphabet bar on the right edge: drag to scrub, letters swell around the finger ------
+
+    private inner class AlphaBar(c: Context) : View(c) {
+        private val letters = "#abcdefghijklmnopqrstuvwxyz".map { it.toString() }
+        var have: Set<String> = emptySet()
+            set(v) { field = v; invalidate() }
+        private val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
+        private var finger = -1f
+        private var current = -1
+        private var swell = 0f
+        private var anim: android.animation.ValueAnimator? = null
+
+        init {
+            contentDescription = "alfabeto"
+        }
+
+        private fun cell() = (height - paddingTop - paddingBottom) / letters.size.toFloat()
+
+        private fun animateSwell(to: Float) {
+            anim?.cancel()
+            if (!Prefs.animations) { swell = to; invalidate(); return }
+            anim = android.animation.ValueAnimator.ofFloat(swell, to).apply {
+                duration = if (to > 0f) 140L else 220L
+                interpolator = android.view.animation.DecelerateInterpolator()
+                addUpdateListener { swell = it.animatedValue as Float; invalidate() }
+                start()
+            }
+        }
+
+        override fun onDraw(cv: Canvas) {
+            val cell = cell()
+            val base = (cell * 0.62f).coerceAtMost(13.sp)
+            val cx = width / 2f + 2.dpf
+            for ((i, l) in letters.withIndex()) {
+                val cy = paddingTop + cell * (i + 0.5f)
+                // Fisheye: letters near the finger grow and slide left, out from under the thumb.
+                val k = if (finger >= 0) (1f - kotlin.math.abs(cy - finger) / (cell * 3.2f)).coerceIn(0f, 1f) else 0f
+                val grow = 1f + 0.9f * k * k * swell
+                p.textSize = base * grow
+                p.typeface = if (i == current) Metro.semibold else Metro.regular
+                p.color = when {
+                    i == current -> Prefs.accent
+                    l in have -> Metro.fg
+                    else -> Metro.sub
+                }
+                p.alpha = if (l in have || i == current) 255 else 110
+                cv.drawText(l, cx - (grow - 1f) * 14.dpf, cy - (p.ascent() + p.descent()) / 2, p)
+            }
+        }
+
+        @android.annotation.SuppressLint("ClickableViewAccessibility")
+        override fun onTouchEvent(e: MotionEvent): Boolean {
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN, MotionEvent.ACTION_MOVE -> {
+                    parent.requestDisallowInterceptTouchEvent(true)
+                    if (e.actionMasked == MotionEvent.ACTION_DOWN) animateSwell(1f)
+                    finger = e.y
+                    val i = ((e.y - paddingTop) / cell()).toInt().coerceIn(0, letters.size - 1)
+                    if (i != current) {
+                        current = i
+                        // An empty letter scrubs to the next one that has apps.
+                        val target = letters.drop(i).firstOrNull { it in have } ?: letters.take(i).lastOrNull { it in have }
+                        if (target != null) {
+                            val pos = rows.indexOf(target)
+                            if (pos >= 0) list.setSelectionFromTop(pos, 0)
+                        }
+                        performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK)
+                        showBubble(letters[i], top + e.y)
+                    } else {
+                        moveBubble(top + e.y)
+                    }
+                    invalidate()
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    current = -1
+                    hideBubble()
+                    animateSwell(0f)
+                }
+            }
+            return true
+        }
+    }
+
+    private fun bubbleY(y: Float) = (y - 44.dp).coerceIn(topInset.toFloat(), (height - bottomInset - 88.dp).toFloat())
+
+    private fun showBubble(l: String, y: Float) {
+        bubble.text = l
+        bubble.setBackgroundColor(Prefs.accent)
+        bubble.translationY = bubbleY(y)
+        if (bubble.visibility != View.VISIBLE) {
+            bubble.visibility = View.VISIBLE
+            if (Prefs.animations) {
+                bubble.alpha = 0f
+                bubble.scaleX = 0.6f
+                bubble.scaleY = 0.6f
+                bubble.an(130).alpha(1f).scaleX(1f).scaleY(1f).start()
+            }
+        } else if (Prefs.animations) {
+            // Small pop on every new letter.
+            bubble.animate().cancel()
+            bubble.alpha = 1f
+            bubble.scaleX = 1.12f
+            bubble.scaleY = 1.12f
+            bubble.an(120).scaleX(1f).scaleY(1f).start()
+        }
+    }
+
+    private fun moveBubble(y: Float) {
+        if (bubble.visibility == View.VISIBLE) bubble.translationY = bubbleY(y)
+    }
+
+    private fun hideBubble() {
+        if (bubble.visibility != View.VISIBLE) return
+        if (Prefs.animations) {
+            bubble.an(160).alpha(0f).scaleX(0.8f).scaleY(0.8f).withEndAction { bubble.visibility = View.INVISIBLE }.start()
+        } else {
+            bubble.visibility = View.INVISIBLE
         }
     }
 
@@ -303,6 +442,10 @@ class AppListPage(c: Context, private val host: Host) : FrameLayout(c) {
         }
     }
 
+    companion object {
+        private val BAR_W = 30.dp
+    }
+
     private class LetterRow(c: Context) : View(c) {
         var letter = ""
             set(v) { field = v; contentDescription = v; invalidate() }
@@ -327,18 +470,20 @@ class AppListPage(c: Context, private val host: Host) : FrameLayout(c) {
 
     private class AppRow(c: Context) : LinearLayout(c) {
         private val icon = ImageView(c)
-        private val name = c.label("", 21f * Prefs.textScale)
+        private val name = c.label("", 21f * Prefs.textScale * Prefs.labelScale)
 
         init {
             orientation = HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setPadding(20.dp, 0, 16.dp, 0)
-            minimumHeight = (66 * maxOf(Prefs.textScale, Prefs.iconScale)).dp
+            minimumHeight = (66 * maxOf(Prefs.textScale * Prefs.labelScale, Prefs.iconScale)).dp
             icon.scaleType = ImageView.ScaleType.CENTER_INSIDE
             val pad = 8.dp
             icon.setPadding(pad, pad, pad, pad)
             addView(icon, LayoutParams((50 * Prefs.iconScale).dp, (50 * Prefs.iconScale).dp))
-            name.setSingleLine()
+            // Large names (accessibility sizes) wrap onto a second line instead of being cut.
+            name.maxLines = 2
+            name.ellipsize = android.text.TextUtils.TruncateAt.END
             addView(name, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = 14.dp })
         }
 
@@ -348,6 +493,8 @@ class AppListPage(c: Context, private val host: Host) : FrameLayout(c) {
             icon.setBackgroundColor(if (flat) Prefs.accent else 0)
             icon.setPadding(pad, pad, pad, pad)
             icon.setImageBitmap(Apps.icon(e, ((if (flat) 34 else 48) * Prefs.iconScale).dp, flat))
+            if (flat && Prefs.tileFg != 0xFFFFFFFF.toInt()) icon.setColorFilter(Prefs.tileFg, android.graphics.PorterDuff.Mode.SRC_IN)
+            else icon.clearColorFilter()
             name.text = e.label
             contentDescription = e.label
         }

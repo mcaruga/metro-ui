@@ -60,6 +60,9 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
     private var photoStart = 0L
     private var pan = floatArrayOf(0f, 0f)
     private var photoLoading = false
+    /** The photo on screen, opened by a tap on the photo tile. */
+    var photoUri: android.net.Uri? = null
+        private set
     private var fx: WeatherFx? = null
     private val photoTimer = Runnable { nextPhoto() }
     var editSelected = false
@@ -67,6 +70,15 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
 
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
     private val bp = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    /** Flat white glyphs drawn in the chosen tile text colour. */
+    private val ip = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+        if (Prefs.tileFg != android.graphics.Color.WHITE) {
+            colorFilter = android.graphics.PorterDuffColorFilter(Prefs.tileFg, android.graphics.PorterDuff.Mode.SRC_IN)
+        }
+    }
+    private val fg = Prefs.tileFg
+    /** Text over photos stays white: it sits on a dark gradient or shadow. */
+    private val overPhoto get() = tile.kind == Tile.WEATHER && Prefs.cityPhoto && Live.cityPhoto != null
     private val tp = TextPaint(Paint.ANTI_ALIAS_FLAG)
     private val slop = ViewConfiguration.get(c).scaledTouchSlop
     private var downX = 0f
@@ -97,7 +109,10 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
         invalidate()
     }
 
-    fun canFlip() = !flipping && tile.kind != Tile.PHOTOS && faces.size > 1
+    fun canFlip() = !flipping && tile.kind != Tile.PHOTOS && !zoneBoard && faces.size > 1
+
+    /** Wide/large clock with extra time zones: one board, no flipping. */
+    private val zoneBoard get() = tile.kind == Tile.CLOCK && (tile.size == TSize.WIDE || tile.size == TSize.LARGE) && Prefs.clockZones.isNotEmpty()
 
     // ---- faces -------------------------------------------------------------------------------
 
@@ -106,6 +121,7 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
         Tile.CALENDAR -> calendarFaces()
         Tile.WEATHER -> weatherFaces()
         Tile.PHOTOS -> photoFaces()
+        Tile.EMPTY -> emptyList()
         else -> appFaces()
     }
 
@@ -135,6 +151,10 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
             val at = Date(alarm.triggerTime)
             val wd = SimpleDateFormat("EEEE", Locale.getDefault()).format(at)
             out += Face(Face.TEXT, big = DateFormat.getTimeFormat(context).format(at), lines = listOf("sveglia", wd))
+        }
+        // Medium tile: each extra zone is a face of its own.
+        for (z in Prefs.clockZones) {
+            out += Face(Face.TEXT, big = Zones.time(context, z), lines = listOf(Zones.name(z), Zones.relative(z)))
         }
         return out
     }
@@ -235,9 +255,10 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
             return
         }
         photoLoading = true
-        Live.loadPhoto(context, (width * 1.3f).toInt(), (height * 1.3f).toInt()) { b ->
+        Live.loadPhoto(context, (width * 1.3f).toInt(), (height * 1.3f).toInt()) { u, b ->
             photoLoading = false
             if (b != null) {
+                photoUri = u
                 photoPrev = photo
                 photo = b
                 photoStart = android.os.SystemClock.uptimeMillis()
@@ -280,7 +301,7 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
             p.shader = LinearGradient(0f, h * 0.6f, 0f, h, 0, 0x88000000.toInt(), Shader.TileMode.CLAMP)
             cv.drawRect(0f, h * 0.6f, w, h, p)
             p.shader = null
-            footer(cv, f, false)
+            footer(cv, f, false, true)
         }
         if (anim && Live.fx && isShown && (fade < 1f || k < 1f)) postInvalidateDelayed(33)
     }
@@ -311,6 +332,10 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
         // The grid doesn't clip children (tilt/flip draw outside), so clip the content here.
         cv.clipRect(0f, 0f, w, h)
         val wall = Wall.bitmap
+        if (tile.kind == Tile.EMPTY) {
+            drawEmpty(cv, wall)
+            return
+        }
         if (wall != null) {
             // Same image behind every tile, fixed to the screen and shifted by the parallax.
             cv.drawBitmap(wall, -translationX, -(translationY + grid.viewTop + grid.bgShift), bp)
@@ -321,6 +346,11 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
             cv.drawRect(0f, 0f, w, h, p)
         }
         if (tile.kind == Tile.WEATHER) drawWeatherBack(cv)
+        if (zoneBoard) {
+            drawZoneBoard(cv)
+            if (editSelected) drawEditButtons(cv)
+            return
+        }
         val f = faces.getOrNull(face) ?: Face(Face.ICON)
         when (f.type) {
             Face.IMAGE -> if (tile.kind == Tile.PHOTOS) drawPhoto(cv, f) else drawImage(cv, f)
@@ -332,32 +362,159 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
 
     private fun iconBmp(size: Int): Bitmap? = app?.let { Apps.icon(it, size, true) }
 
+    // ---- empty tile: a window onto the background ---------------------------------------------
+
+    private fun drawEmpty(cv: Canvas, wall: Bitmap?) {
+        if (wall != null) cv.drawBitmap(wall, -translationX, -(translationY + grid.viewTop + grid.bgShift), bp)
+        if (grid.editing) {
+            // Invisible otherwise: outline it so it can be grabbed, moved and resized.
+            p.style = Paint.Style.STROKE
+            p.strokeWidth = 2.dpf
+            p.color = Metro.fg
+            p.pathEffect = android.graphics.DashPathEffect(floatArrayOf(8.dpf, 6.dpf), 0f)
+            cv.drawRect(1.dpf, 1.dpf, width - 1.dpf, height - 1.dpf, p)
+            p.pathEffect = null
+            p.style = Paint.Style.FILL
+        }
+        if (editSelected) drawEditButtons(cv)
+    }
+
+    // ---- clock with time zones ---------------------------------------------------------------
+
+    private fun drawZoneBoard(cv: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        val pad = 10.dpf
+        val ts = Prefs.textScale
+        val now = Date()
+        val zones = Prefs.clockZones
+        tp.color = fg
+        val time = DateFormat.getTimeFormat(context).format(now)
+        val day = SimpleDateFormat("EEEE d MMMM", Locale.getDefault()).format(now)
+        if (tile.size == TSize.LARGE) {
+            tp.typeface = Metro.light
+            tp.textSize = min(h * 0.2f, 76.sp) * ts
+            var y = pad - tp.ascent() * 0.92f
+            cv.drawText(time, pad - tp.textSize * 0.04f, y, tp)
+            tp.typeface = Metro.regular
+            tp.textSize = 15.sp * ts
+            y += tp.fontSpacing + 2.dpf
+            cv.drawText(TextUtils.ellipsize(day, tp, w - 2 * pad, TextUtils.TruncateAt.END).toString(), pad, y, tp)
+            y += 12.dpf
+            p.color = (fg and 0xFFFFFF) or 0x55000000
+            cv.drawRect(pad, y, w - pad, y + 1.dpf, p)
+            val shown = zones.take(4)
+            val rowH = (h - y - pad) / 4
+            for ((i, z) in shown.withIndex()) zoneRow(cv, z, pad, y + i * rowH, w - pad, rowH, 30.sp * ts)
+        } else {
+            // Wide: home time on the left, up to two zones stacked on the right.
+            val split = w * 0.5f
+            tp.typeface = Metro.light
+            tp.textSize = min(h * 0.34f, 64.sp) * ts
+            while (tp.measureText(time) > split - pad && tp.textSize > 12.sp) tp.textSize *= 0.92f
+            var y = pad - tp.ascent() * 0.92f
+            cv.drawText(time, pad - tp.textSize * 0.04f, y, tp)
+            tp.typeface = Metro.regular
+            tp.textSize = 14.sp * ts
+            for (line in listOf(SimpleDateFormat("EEEE", Locale.getDefault()).format(now), SimpleDateFormat("d MMMM", Locale.getDefault()).format(now))) {
+                y += tp.fontSpacing
+                cv.drawText(TextUtils.ellipsize(line, tp, split - pad, TextUtils.TruncateAt.END).toString(), pad, y, tp)
+            }
+            val shown = zones.take(2)
+            val rowH = (h - 2 * pad) / 2
+            val top = pad + (h - 2 * pad - rowH * shown.size) / 2
+            for ((i, z) in shown.withIndex()) zoneRow(cv, z, split + 4.dpf, top + i * rowH, w - pad, rowH, 24.sp * ts)
+        }
+    }
+
+    /** City and relative day on the left, its time on the right, within one row. */
+    private fun zoneRow(cv: Canvas, z: String, x0: Float, top: Float, x1: Float, rowH: Float, timeSize: Float) {
+        val ts = Prefs.textScale
+        tp.typeface = Metro.light
+        tp.textSize = timeSize
+        val t = Zones.time(context, z)
+        val tw = tp.measureText(t)
+        val cy = top + rowH / 2
+        cv.drawText(t, x1 - tw, cy - (tp.ascent() + tp.descent()) / 2, tp)
+        val avail = (x1 - tw - 8.dpf - x0).coerceAtLeast(0f)
+        tp.typeface = Metro.semibold
+        tp.textSize = 15.sp * ts
+        cv.drawText(TextUtils.ellipsize(Zones.name(z), tp, avail, TextUtils.TruncateAt.END).toString(), x0, cy - 1.dpf, tp)
+        val sub = Zones.relative(z)
+        tp.typeface = Metro.regular
+        tp.textSize = 12.sp * ts
+        tp.alpha = 190
+        cv.drawText(TextUtils.ellipsize(sub, tp, avail, TextUtils.TruncateAt.END).toString(), x0, cy - 1.dpf + tp.fontSpacing, tp)
+        tp.alpha = 255
+    }
+
+    // ---- app icon + name ---------------------------------------------------------------------
+
+    /** App name, bigger with the "dimensione nomi" setting; wraps to two lines on larger tiles. */
+    private fun nameLayout(avail: Float, onImage: Boolean = false): StaticLayout? {
+        val l = label
+        if (l.isEmpty() || tile.kind == Tile.CLOCK || avail <= 0f) return null
+        if (small && (tile.kind != Tile.APP || !Prefs.smallLabels)) return null
+        val np = TextPaint(tp).apply {
+            typeface = Metro.regular
+            textSize = (if (small) 11.sp else 13.sp) * Prefs.textScale * Prefs.labelScale
+            color = if (overPhoto || onImage) android.graphics.Color.WHITE else fg
+        }
+        if (overPhoto) np.setShadowLayer(3.dpf, 0f, 1.dpf, 0x99000000.toInt()) else np.clearShadowLayer()
+        return StaticLayout.Builder.obtain(l, 0, l.length, np, avail.toInt())
+            .setMaxLines(if (small) 1 else 2)
+            .setEllipsize(TextUtils.TruncateAt.END)
+            .setIncludePad(false)
+            .setLineSpacing(0f, 0.92f)
+            .build()
+    }
+
+    private fun drawName(cv: Canvas, sl: StaticLayout, x: Float) {
+        val pad = if (small) 5.dpf else 8.dpf
+        cv.save()
+        cv.translate(x, height - pad - sl.height + sl.getLineDescent(sl.lineCount - 1) * 0.4f)
+        sl.draw(cv)
+        cv.restore()
+    }
+
     private fun drawIcon(cv: Canvas, f: Face) {
         val w = width.toFloat()
         val h = height.toFloat()
-        val ib = (min(w, h) * (if (small) 0.5f else 0.38f) * Prefs.iconScale).coerceAtMost(min(w, h) * 0.85f).toInt()
-        val cy = if (small) h / 2 else h / 2 - 6.dpf
-        val bmp = iconBmp(ib)
+        val pad = if (small) 5.dpf else 8.dpf
+        val name = nameLayout(w - 2 * pad)
+        val nameH = name?.height?.toFloat() ?: 0f
+        // Icon centred in the space left above the name.
+        val area = if (name != null) h - nameH - pad * 1.5f else h
+        var ib = (min(w, h) * (if (small) 0.5f else 0.38f) * Prefs.iconScale).coerceAtMost(min(w, h) * 0.85f)
+        if (name != null) ib = min(ib, area * (if (small) 0.78f else 0.7f))
+        val ibi = ib.toInt().coerceAtLeast(1)
+        val cy = when {
+            name != null && small -> area / 2 + 2.dpf
+            name != null -> min(h / 2 - 6.dpf, area / 2 + 4.dpf)
+            small -> h / 2
+            else -> h / 2 - 6.dpf
+        }
+        val bmp = iconBmp(ibi)
         if (f.count > 0) {
             tp.typeface = Metro.light
-            tp.color = 0xFFFFFFFF.toInt()
-            tp.textSize = ib * 0.85f
+            tp.color = fg
+            tp.textSize = ibi * 0.85f
             val txt = if (f.count > 99) "99+" else f.count.toString()
             val tw = tp.measureText(txt)
-            val total = ib + 6.dpf + tw
+            val total = ibi + 6.dpf + tw
             val x0 = (w - total) / 2
-            if (bmp != null) cv.drawBitmap(bmp, x0, cy - ib / 2f, bp)
-            cv.drawText(txt, x0 + ib + 6.dpf, cy - (tp.ascent() + tp.descent()) / 2, tp)
+            if (bmp != null) cv.drawBitmap(bmp, x0, cy - ibi / 2f, ip)
+            cv.drawText(txt, x0 + ibi + 6.dpf, cy - (tp.ascent() + tp.descent()) / 2, tp)
         } else if (bmp != null) {
-            cv.drawBitmap(bmp, (w - ib) / 2, cy - ib / 2f, bp)
+            cv.drawBitmap(bmp, (w - ibi) / 2, cy - ibi / 2f, ip)
         } else {
             tp.typeface = Metro.light
-            tp.color = 0xFFFFFFFF.toInt()
-            tp.textSize = ib.toFloat()
+            tp.color = fg
+            tp.textSize = ibi.toFloat()
             val g = when (tile.kind) { Tile.PHOTOS -> "▣"; Tile.WEATHER -> "☁︎"; Tile.CALENDAR -> "▦"; else -> "◷" }
             cv.drawText(g, (w - tp.measureText(g)) / 2, cy - (tp.ascent() + tp.descent()) / 2, tp)
         }
-        if (!small) footer(cv, f, false)
+        if (small) name?.let { drawName(cv, it, pad) } else footer(cv, f, false)
     }
 
     private fun drawText(cv: Canvas, f: Face) {
@@ -365,7 +522,7 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
         val h = height.toFloat()
         val pad = 10.dpf
         val avail = w - 2 * pad
-        tp.color = 0xFFFFFFFF.toInt()
+        tp.color = if (overPhoto) android.graphics.Color.WHITE else fg
         if (small) {
             val s = f.big ?: f.title ?: ""
             tp.typeface = Metro.light
@@ -375,7 +532,8 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
             return
         }
         var y = pad
-        val reserve = 26.dpf
+        // Keep the bottom free for the app name, which can be large and two lines.
+        val reserve = max(26.dpf, (nameLayout(avail)?.height ?: 0) + 12.dpf)
         if (f.big != null) {
             tp.typeface = Metro.light
             tp.textSize = if (tile.size == TSize.LARGE) min(h * 0.18f, 72.sp) * Prefs.textScale else min(h * 0.32f, 64.sp) * Prefs.textScale
@@ -434,7 +592,7 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
                 val y = h - 8.dpf - 13.sp * Prefs.textScale - 8.dpf
                 cv.drawText(TextUtils.ellipsize(t, tp, w - 20.dpf, TextUtils.TruncateAt.END).toString(), 10.dpf, y, tp)
             }
-            footer(cv, f, false)
+            footer(cv, f, false, true)
         }
     }
 
@@ -462,7 +620,7 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
     }
 
     /** Label bottom-left; small icon, count or corner text bottom-right. */
-    private fun footer(cv: Canvas, f: Face, withIcon: Boolean) {
+    private fun footer(cv: Canvas, f: Face, withIcon: Boolean, onImage: Boolean = false) {
         val w = width.toFloat()
         val h = height.toFloat()
         val pad = 8.dpf
@@ -470,7 +628,7 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
         if (f.corner != null) {
             tp.typeface = Metro.regular
             tp.textSize = 15.sp * Prefs.textScale
-            tp.color = 0xFFFFFFFF.toInt()
+            tp.color = if (overPhoto || onImage) android.graphics.Color.WHITE else fg
             val cw = tp.measureText(f.corner)
             cv.drawText(f.corner, right - cw, h - pad, tp)
             right -= cw + 6.dpf
@@ -478,7 +636,7 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
             val s = (22 * Prefs.iconScale).dp
             val bmp = iconBmp(s)
             if (bmp != null) {
-                cv.drawBitmap(bmp, right - s, h - pad - s + 3.dpf, bp)
+                cv.drawBitmap(bmp, right - s, h - pad - s + 3.dpf, if (overPhoto || onImage) bp else ip)
                 right -= s + 6.dpf
             }
             if (f.count > 0) {
@@ -490,13 +648,7 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
                 right -= cw + 6.dpf
             }
         }
-        val l = label
-        if (l.isEmpty() || tile.kind == Tile.CLOCK) return
-        tp.typeface = Metro.regular
-        tp.textSize = 13.sp * Prefs.textScale
-        tp.color = 0xFFFFFFFF.toInt()
-        val txt = TextUtils.ellipsize(l, tp, (right - pad).coerceAtLeast(0f), TextUtils.TruncateAt.END).toString()
-        cv.drawText(txt, pad, h - pad, tp)
+        nameLayout(right - pad, onImage)?.let { drawName(cv, it, pad) }
     }
 
     private fun drawEditButtons(cv: Canvas) {

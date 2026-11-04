@@ -63,6 +63,21 @@ object Prefs {
     var textScale: Float
         get() = sp.getFloat("text_scale", 1f)
         set(v) { sp.edit().putFloat("text_scale", v).apply(); bump() }
+    /** App names on tiles and in the app list; up to 2x for people who need large text. */
+    var labelScale: Float
+        get() = sp.getFloat("label_scale", 1f)
+        set(v) { sp.edit().putFloat("label_scale", v).apply(); bump() }
+    var smallLabels: Boolean
+        get() = b("small_labels", true)
+        set(v) { put("small_labels", v); bump() }
+    /** Colour of text and glyphs on the tiles. */
+    var tileFg: Int
+        get() = sp.getInt("tile_fg", Color.WHITE)
+        set(v) { sp.edit().putInt("tile_fg", v or 0xFF000000.toInt()).apply(); bump() }
+    /** Extra time zones on the clock tile, TimeZone ids separated by ','. */
+    var clockZones: List<String>
+        get() = sp.getString("clock_zones", null)?.split(',')?.filter { it.isNotBlank() }.orEmpty()
+        set(v) = sp.edit().putString("clock_zones", v.joinToString(",")).apply()
     var bgUri: String?
         get() = sp.getString("bg_uri", null)
         set(v) { sp.edit().putString("bg_uri", v).apply(); bump() }
@@ -103,6 +118,9 @@ object Prefs {
     var navBar: Boolean
         get() = b("nav_bar", false)
         set(v) = put("nav_bar", v)
+    var askedHome: Boolean
+        get() = b("asked_home", false)
+        set(v) = put("asked_home", v)
     var askedPerms: Boolean
         get() = b("asked_perms", false)
         set(v) = put("asked_perms", v)
@@ -179,6 +197,15 @@ object Metro {
     fun accentName(c: Int): String {
         val i = ACCENTS.indexOf(c or 0xFF000000.toInt())
         return if (i >= 0) NAMES[i] else "personalizzato " + hex(c)
+    }
+
+    /** Tile text/icon colours: neutrals first, then the accents. */
+    val FG_PRESETS = intArrayOf(Color.WHITE, Color.BLACK, 0xFFDADADA.toInt(), 0xFF3A3A3A.toInt()) + ACCENTS
+    val FG_NAMES = arrayOf("bianco", "nero", "grigio chiaro", "grigio scuro") + NAMES
+
+    fun fgName(c: Int): String {
+        val i = FG_PRESETS.indexOf(c or 0xFF000000.toInt())
+        return if (i >= 0) FG_NAMES[i] else "personalizzato " + hex(c)
     }
 
     fun hex(c: Int) = String.format("#%06X", c and 0xFFFFFF)

@@ -32,6 +32,8 @@ class Tile(val kind: String, val app: String?, var size: TSize, var color: Int =
         const val CALENDAR = "calendar"
         const val PHOTOS = "photos"
         const val WEATHER = "weather"
+        /** Blank spacer that lets the background image show through. */
+        const val EMPTY = "empty"
 
         fun fromJson(o: JSONObject) = Tile(
             o.getString("k"),
@@ -45,6 +47,7 @@ class Tile(val kind: String, val app: String?, var size: TSize, var color: Int =
             CALENDAR -> "calendario"
             PHOTOS -> "foto"
             WEATHER -> "meteo"
+            EMPTY -> "vuoto"
             else -> ""
         }
     }
