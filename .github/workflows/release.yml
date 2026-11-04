@@ -55,6 +55,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.METRO_PUBLISH_TOKEN }}
           METRO_GITHUB: mcaruga/metro-ui-download
+          NOTES: ${{ inputs.notes }}
         run: |
           [ -n "$GH_TOKEN" ] || { echo "METRO_PUBLISH_TOKEN secret missing"; exit 1; }
-          tools/publish.sh "${{ inputs.notes }}"
+          tools/publish.sh "$NOTES"
