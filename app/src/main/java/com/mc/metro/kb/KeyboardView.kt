@@ -21,6 +21,8 @@ import com.mc.metro.dpf
 import com.mc.metro.sp
 import kotlin.math.abs
 
+const val TOOLS = 6
+
 /** Windows Phone style keyboard: flat grey keys, accent highlight, preview above the finger. */
 @SuppressLint("ViewConstructor")
 class KeyboardView(c: Context, private val ime: MetroIme) : View(c) {
@@ -33,9 +35,23 @@ class KeyboardView(c: Context, private val ime: MetroIme) : View(c) {
     var suggestions: List<String> = emptyList()
         set(v) { field = v; invalidate() }
     var letterMode = true
+    /** Toolbar panel shown as selected (-1: none). */
+    var activeTool = -1
+        set(v) { field = v; invalidate() }
+    /** Short message in the top strip (translation progress), over suggestions and tools. */
+    var status: String? = null
+        set(v) { field = v; invalidate() }
 
     private val stripH = 44.dp
-    private val rowH = 54.dp
+    /** Every layout shares the same height, so the keyboard never jumps between panels. */
+    private val areaH get() = if (Prefs.kbNumberRow) 5 * 48.dp else 4 * 54.dp
+    private val rowH get() = areaH / rows.size.coerceAtLeast(1)
+    private val gp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = 1.6f.dpf
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
     private val gap = 4.dpf
     private var sysBottom = 0
 
@@ -98,7 +114,7 @@ class KeyboardView(c: Context, private val ime: MetroIme) : View(c) {
     }
 
     override fun onMeasure(ws: Int, hs: Int) {
-        setMeasuredDimension(MeasureSpec.getSize(ws), stripH + rows.size * rowH + sysBottom)
+        setMeasuredDimension(MeasureSpec.getSize(ws), stripH + areaH + sysBottom)
     }
 
     override fun onSizeChanged(w: Int, h: Int, ow: Int, oh: Int) = layoutKeys()
@@ -150,10 +166,18 @@ class KeyboardView(c: Context, private val ime: MetroIme) : View(c) {
         drawStrip(cv)
         for (row in rows) for (k in row) {
             if (k.code == K.SPACER) continue
+            if (k.code == K.NONE) {
+                tp.color = subColor
+                tp.typeface = Metro.regular
+                tp.textSize = 14.sp
+                val t = TextUtils.ellipsize(k.label, tp, k.rect.width() - 8.dpf, TextUtils.TruncateAt.END).toString()
+                cv.drawText(t, k.rect.centerX(), k.rect.centerY() - (tp.ascent() + tp.descent()) / 2, tp)
+                continue
+            }
             val pressed = k === active && popKeys == null && !(k.code == K.SPACE && spaceDrag)
             val lock = k.code == K.SHIFT && shift == 2
             p.color = when {
-                pressed -> accent
+                pressed || k.on -> accent
                 lock -> textColor
                 k.fn -> fnColor
                 else -> keyColor
@@ -161,7 +185,7 @@ class KeyboardView(c: Context, private val ime: MetroIme) : View(c) {
             cv.drawRect(k.rect, p)
             val label = display(k)
             tp.color = when {
-                pressed -> 0xFFFFFFFF.toInt()
+                pressed || k.on -> 0xFFFFFFFF.toInt()
                 lock -> bgColor
                 k.code == K.SHIFT && shift == 1 -> accent
                 k.code == K.SPACE -> subColor
@@ -175,10 +199,21 @@ class KeyboardView(c: Context, private val ime: MetroIme) : View(c) {
                 k.code == 0 -> 22.sp
                 else -> 24.sp
             }
-            cv.drawText(label, k.rect.centerX(), k.rect.centerY() - (tp.ascent() + tp.descent()) / 2, tp)
+            val shown = if (k.code == K.CLIP) {
+                tp.typeface = Metro.regular
+                tp.textSize = 16.sp
+                TextUtils.ellipsize(label, tp, k.rect.width() - 24.dpf, TextUtils.TruncateAt.END).toString()
+            } else label
+            cv.drawText(shown, k.rect.centerX(), k.rect.centerY() - (tp.ascent() + tp.descent()) / 2, tp)
+            if (k.hint.isNotEmpty() && letterMode) {
+                tp.color = if (pressed) 0xCCFFFFFF.toInt() else subColor
+                tp.typeface = Metro.regular
+                tp.textSize = 11.sp
+                cv.drawText(k.hint, k.rect.right - 7.dpf, k.rect.top + 13.dpf, tp)
+            }
         }
         val a = active
-        if (a != null && popKeys == null && !a.fn && a.code != K.SPACE && a.code != K.SPACER && a.code != K.DEL) {
+        if (a != null && popKeys == null && !a.fn && a.code >= 0 && a.code != K.SPACE) {
             val r = RectF(a.rect.left - 4.dpf, a.rect.top - rowH - 2.dpf, a.rect.right + 4.dpf, a.rect.top - 4.dpf)
             if (r.left < 0) r.offset(-r.left, 0f)
             if (r.right > width) r.offset(width - r.right, 0f)
@@ -206,7 +241,18 @@ class KeyboardView(c: Context, private val ime: MetroIme) : View(c) {
 
     private fun drawStrip(cv: Canvas) {
         stripRects.clear()
-        if (suggestions.isEmpty()) return
+        status?.let {
+            tp.textSize = 16.sp
+            tp.typeface = Metro.regular
+            tp.color = subColor
+            cv.drawText(TextUtils.ellipsize(it, tp, width - 24.dpf, TextUtils.TruncateAt.END).toString(),
+                width / 2f, stripH / 2f - (tp.ascent() + tp.descent()) / 2, tp)
+            return
+        }
+        if (suggestions.isEmpty()) {
+            drawTools(cv)
+            return
+        }
         tp.textSize = 18.sp
         tp.typeface = Metro.regular
         val slot = width / 3f
@@ -220,6 +266,70 @@ class KeyboardView(c: Context, private val ime: MetroIme) : View(c) {
             tp.color = if (i == stripDown) 0xFFFFFFFF.toInt() else textColor
             val t = TextUtils.ellipsize(s, tp, slot - 12.dpf, TextUtils.TruncateAt.END).toString()
             cv.drawText(t, r.centerX(), r.centerY() - (tp.ascent() + tp.descent()) / 2, tp)
+        }
+    }
+
+    /** Samsung-like toolbar: emoji, clipboard, text editing, translate, settings, hide. */
+    private fun drawTools(cv: Canvas) {
+        val n = TOOLS
+        val slot = width / n.toFloat()
+        val cy = stripH / 2f
+        val s = 20.dpf
+        for (i in 0 until n) {
+            val r = RectF(i * slot, 0f, (i + 1) * slot, stripH.toFloat())
+            stripRects += r
+            val cx = r.centerX()
+            val on = i == activeTool || i == stripDown
+            if (on) {
+                p.color = accent
+                cv.drawCircle(cx, cy, 17.dpf, p)
+            }
+            gp.color = if (on) 0xFFFFFFFF.toInt() else textColor
+            val h = s / 2
+            when (i) {
+                0 -> {
+                    cv.drawCircle(cx, cy, h, gp)
+                    cv.drawPoint(cx - h * 0.38f, cy - h * 0.25f, gp)
+                    cv.drawPoint(cx + h * 0.38f, cy - h * 0.25f, gp)
+                    cv.drawArc(RectF(cx - h * 0.5f, cy - h * 0.3f, cx + h * 0.5f, cy + h * 0.55f), 20f, 140f, false, gp)
+                }
+                1 -> {
+                    cv.drawRect(cx - h * 0.75f, cy - h * 0.8f, cx + h * 0.75f, cy + h, gp)
+                    cv.drawRect(cx - h * 0.35f, cy - h, cx + h * 0.35f, cy - h * 0.6f, gp)
+                    cv.drawLine(cx - h * 0.4f, cy - h * 0.05f, cx + h * 0.4f, cy - h * 0.05f, gp)
+                    cv.drawLine(cx - h * 0.4f, cy + h * 0.4f, cx + h * 0.2f, cy + h * 0.4f, gp)
+                }
+                2 -> {
+                    cv.drawLine(cx, cy - h, cx, cy + h, gp)
+                    cv.drawLine(cx - h * 0.35f, cy - h, cx + h * 0.35f, cy - h, gp)
+                    cv.drawLine(cx - h * 0.35f, cy + h, cx + h * 0.35f, cy + h, gp)
+                    cv.drawLine(cx - h, cy - h * 0.3f, cx - h * 0.55f, cy, gp)
+                    cv.drawLine(cx - h, cy + h * 0.3f, cx - h * 0.55f, cy, gp)
+                    cv.drawLine(cx + h, cy - h * 0.3f, cx + h * 0.55f, cy, gp)
+                    cv.drawLine(cx + h, cy + h * 0.3f, cx + h * 0.55f, cy, gp)
+                }
+                3 -> {
+                    tp.color = gp.color
+                    tp.typeface = Metro.semibold
+                    tp.textSize = 12.sp
+                    cv.drawRect(cx - h, cy - h * 0.85f, cx + h, cy + h * 0.85f, gp)
+                    cv.drawText("A文", cx, cy - (tp.ascent() + tp.descent()) / 2, tp)
+                }
+                4 -> {
+                    cv.drawCircle(cx, cy, h * 0.32f, gp)
+                    for (k in 0 until 8) {
+                        val a = Math.PI / 4 * k
+                        val c = kotlin.math.cos(a).toFloat()
+                        val sn = kotlin.math.sin(a).toFloat()
+                        cv.drawLine(cx + c * h * 0.6f, cy + sn * h * 0.6f, cx + c * h, cy + sn * h, gp)
+                    }
+                    cv.drawCircle(cx, cy, h * 0.62f, gp)
+                }
+                5 -> {
+                    cv.drawLine(cx - h * 0.7f, cy - h * 0.3f, cx, cy + h * 0.4f, gp)
+                    cv.drawLine(cx, cy + h * 0.4f, cx + h * 0.7f, cy - h * 0.3f, gp)
+                }
+            }
         }
     }
 
@@ -299,7 +409,9 @@ class KeyboardView(c: Context, private val ime: MetroIme) : View(c) {
             MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
                 if (stripDown >= 0 && e.actionMasked == MotionEvent.ACTION_UP) {
                     val s = stripAt(e.x)
-                    if (s == stripDown && e.y < stripH * 2) ime.pickSuggestion(s)
+                    if (s == stripDown && e.y < stripH * 2 && status == null) {
+                        if (suggestions.isEmpty()) ime.onTool(s) else ime.pickSuggestion(s)
+                    }
                     stripDown = -1
                     invalidate()
                     return true
@@ -325,7 +437,7 @@ class KeyboardView(c: Context, private val ime: MetroIme) : View(c) {
         if (commit && k != null) {
             when {
                 pk != null -> ime.typeText(pk[popSel])
-                k.code == K.DEL || k.code == K.SPACER -> {}
+                k.code == K.DEL || k.code == K.SPACER || k.code == K.NONE -> {}
                 k.code == K.SPACE && spaceDrag -> {}
                 else -> ime.onKey(k)
             }

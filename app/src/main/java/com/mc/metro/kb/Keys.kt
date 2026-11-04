@@ -11,6 +11,10 @@ class Key(
     val fn: Boolean = false,
     val pops: String = "",
     val text: String? = null,
+    /** Small symbol drawn in the corner; a long press types it. */
+    val hint: String = "",
+    /** Selected state (current emoji category, last translation language). */
+    val on: Boolean = false,
 ) {
     val rect = RectF()
     val output: String get() = text ?: label
@@ -24,73 +28,146 @@ object K {
     const val DEL = -5
     const val SYM2 = -6
     const val EMOJI = -7
-    const val EMOJI_PAGE = -8
+    const val PREV = -8
+    const val NEXT = -9
+    const val EMOJI_CAT = -10
+    const val CLIP = -11
+    const val CLIP_CLEAR = -12
+    const val LANG = -13
+    const val SELECT_ALL = -20
+    const val COPY = -21
+    const val CUT = -22
+    const val PASTE = -23
+    const val HOME = -24
+    const val END = -25
+    const val LEFT = -26
+    const val RIGHT = -27
+    const val UNDO = -28
+    const val REDO = -29
+    const val SEL_LEFT = -30
+    const val SEL_RIGHT = -31
+    const val NONE = -98
     const val SPACER = -99
     const val SPACE = 32
 }
 
 object Layouts {
     private val pops = mapOf(
-        'q' to "1", 'w' to "2", 'e' to "3èéêë€", 'r' to "4", 't' to "5", 'y' to "6ý", 'u' to "7ùúûü",
-        'i' to "8ìíîï", 'o' to "9òóôöøœ", 'p' to "0", 'a' to "àáâäãåæ", 's' to "ßš", 'd' to "ð",
-        'c' to "çćč", 'n' to "ñń", 'z' to "žź", 'l' to "ł", 'g' to "ğ",
+        'e' to "èéêë", 'y' to "ý", 'u' to "ùúûü", 'i' to "ìíîï", 'o' to "òóôöøœ",
+        'a' to "àáâäãåæ", 's' to "ßš", 'd' to "ð", 'c' to "çćč", 'n' to "ñń", 'z' to "žź", 'l' to "ł", 'g' to "ğ",
         '"' to "“”«»", '\'' to "‘’`", '-' to "–—_", '?' to "¿", '!' to "¡", '€' to "$£¥¢",
         '(' to "[{<", ')' to "]}>", '%' to "‰", '*' to "★†", '/' to "\\", '&' to "§",
+        '1' to "¹½⅓¼", '2' to "²⅔", '3' to "³¾", '0' to "°∅",
     )
+
+    /** Symbol on each letter, as on the Samsung keyboard: a long press types it. */
+    private val hints = mapOf(
+        'q' to "+", 'w' to "-", 'e' to "€", 'r' to "÷", 't' to "/", 'y' to "=", 'u' to "<", 'i' to ">", 'o' to "[", 'p' to "]",
+        'a' to "@", 's' to "$", 'd' to "#", 'f' to "%", 'g' to "^", 'h' to "&", 'j' to "*", 'k' to "(", 'l' to ")",
+        'z' to "_", 'x' to "'", 'c' to "\"", 'v' to ":", 'b' to ";", 'n' to "!", 'm' to "?",
+    )
+    private const val DIGITS = "1234567890"
 
     private fun keys(s: String) = s.map { Key(it.toString(), it.code, pops = pops[it] ?: "") }
     private fun spacer(w: Float) = Key("", K.SPACER, w)
-    private fun del() = Key("⌫", K.DEL, 1.5f, true)
+    private fun del(w: Float = 1.5f) = Key("⌫", K.DEL, w, true)
+    private fun abc(w: Float = 1.5f) = Key("abc", K.ABC, w, true)
+    private fun enter(w: Float = 1.5f) = Key("↵", K.ENTER, w, true)
+
+    /** Letters; without the number row the top row's long press also gives the digit. */
+    private fun letterKeys(s: String, numberRow: Boolean, showHints: Boolean) = s.map { ch ->
+        val digit = if (!numberRow && s.startsWith("q")) DIGITS.getOrNull(s.indexOf(ch))?.toString().orEmpty() else ""
+        val h = hints[ch].orEmpty()
+        Key(ch.toString(), ch.code, pops = h + digit + (pops[ch] ?: ""), hint = if (showHints) h else "")
+    }
 
     private fun bottom(mid: Key, mode: Key) = listOf(
         mode, mid,
         Key(",", ','.code, pops = ";:'\"!?"),
         Key("", K.SPACE, 4f),
         Key(".", '.'.code, pops = "?!…-@"),
-        Key("↵", K.ENTER, 1.5f, true),
+        enter(),
     )
 
-    fun letters(mid: Key): List<List<Key>> = listOf(
-        keys("qwertyuiop"),
-        listOf(spacer(0.5f)) + keys("asdfghjkl") + spacer(0.5f),
-        listOf(Key("⇧", K.SHIFT, 1.5f, true)) + keys("zxcvbnm") + del(),
-        bottom(mid, Key("&123", K.SYM, 1.5f, true)),
-    )
+    fun letters(mid: Key, numberRow: Boolean, showHints: Boolean): List<List<Key>> =
+        (if (numberRow) listOf(keys(DIGITS)) else emptyList()) + listOf(
+            letterKeys("qwertyuiop", numberRow, showHints),
+            listOf(spacer(0.5f)) + letterKeys("asdfghjkl", numberRow, showHints) + spacer(0.5f),
+            listOf(Key("⇧", K.SHIFT, 1.5f, true)) + letterKeys("zxcvbnm", numberRow, showHints) + del(),
+            bottom(mid, Key("!#1", K.SYM, 1.5f, true)),
+        )
 
     fun sym1(mid: Key): List<List<Key>> = listOf(
         keys("1234567890"),
         keys("@#€%&*-+()"),
         listOf(Key("1/2", K.SYM2, 1.5f, true)) + keys("!\"':;/?") + del(),
-        bottom(mid, Key("abc", K.ABC, 1.5f, true)),
+        bottom(mid, abc()),
     )
 
     fun sym2(mid: Key): List<List<Key>> = listOf(
         keys("~`|•√π÷×{}"),
         keys("£¥$¢^°=_[]"),
         listOf(Key("2/2", K.SYM, 1.5f, true)) + keys("\\©®™✓<>") + del(),
-        bottom(mid, Key("abc", K.ABC, 1.5f, true)),
+        bottom(mid, abc()),
     )
 
-    private val EMOJI = listOf(
-        "😀 😂 😊 😍 😘 😉 😎 🤔 😅 😢",
-        "😭 😡 😱 😴 🙄 🤗 🥳 😇 🙈 🤦",
-        "👍 👎 👏 🙏 💪 👋 🤞 👌 ✌️ 🤝",
-        "❤️ 💔 🔥 🎉 ✨ 💯 ⭐ 🌹 🍕 ☕",
-        "🎂 🎁 ⚽ 🚗 ✈️ 🏠 📷 🎵 💰 📱",
-        "🐶 🐱 🌞 🌙 🌧️ ❄️ 🌊 🍀 🍷 🍺",
-    ).map { r -> r.split(' ').map { Key(it, 0, text = it) } }
+    const val EMOJI_COLS = 8
+    const val EMOJI_ROWS = 3
 
-    fun emoji(page: Int): List<List<Key>> {
-        val start = if (page == 0) 0 else 3
-        return EMOJI.subList(start, start + 3) + listOf(
+    /** Three rows of emoji, the category tabs, then abc · ◀ · space · ▶ · delete. */
+    fun emoji(cat: Int, page: Int): List<List<Key>> {
+        val all = Emoji.category(cat)
+        val per = EMOJI_COLS * EMOJI_ROWS
+        val shown = all.drop(page * per).take(per)
+        val grid = List(EMOJI_ROWS) { r ->
+            List(EMOJI_COLS) { c ->
+                val e = shown.getOrNull(r * EMOJI_COLS + c)
+                if (e == null) spacer(1f) else Key(e, 0, text = e)
+            }
+        }
+        val empty = cat == 0 && all.isEmpty()
+        val rows = if (empty) listOf(listOf(Key("le emoji usate di recente appariranno qui", K.NONE, 8f))) + grid.drop(1) else grid
+        val tabs = Emoji.ICONS.mapIndexed { i, ic -> Key(ic, K.EMOJI_CAT, text = i.toString(), on = i == cat) }
+        return rows + listOf(tabs) + listOf(
+            listOf(abc(), Key("◀", K.PREV, 1.2f, true), Key("", K.SPACE, 4f), Key("▶", K.NEXT, 1.2f, true), del())
+        )
+    }
+
+    const val CLIP_ROWS = 3
+
+    fun clips(list: List<String>, page: Int): List<List<Key>> {
+        val shown = list.drop(page * CLIP_ROWS).take(CLIP_ROWS)
+        val rows = if (shown.isEmpty()) {
+            listOf(listOf(Key("nessun testo copiato: quello che copi appare qui", K.NONE, 10f)))
+        } else {
+            shown.map { listOf(Key(it.replace('\n', ' '), K.CLIP, 10f, text = it)) }
+        }
+        val pages = (list.size + CLIP_ROWS - 1) / CLIP_ROWS
+        return rows + List(CLIP_ROWS - rows.size) { listOf(spacer(10f)) } + listOf(
             listOf(
-                Key("abc", K.ABC, 1.5f, true),
-                Key(if (page == 0) "1/2" else "2/2", K.EMOJI_PAGE, 1.5f, true),
-                Key("", K.SPACE, 4f),
-                del(),
-                Key("↵", K.ENTER, 1.5f, true),
+                abc(2f),
+                Key("◀", K.PREV, 1.5f, true),
+                Key(if (pages > 1) "${page + 1}/$pages" else "", K.NONE, 1.5f, true),
+                Key("▶", K.NEXT, 1.5f, true),
+                Key("svuota", K.CLIP_CLEAR, 2f, true),
+                del(1.5f),
             )
         )
+    }
+
+    fun edit(): List<List<Key>> {
+        fun e(l: String, c: Int) = Key(l, c, 2.5f, true)
+        return listOf(
+            listOf(e("tutto", K.SELECT_ALL), e("copia", K.COPY), e("taglia", K.CUT), e("incolla", K.PASTE)),
+            listOf(e("inizio", K.HOME), e("◀", K.LEFT), e("▶", K.RIGHT), e("fine", K.END)),
+            listOf(e("annulla", K.UNDO), e("ripeti", K.REDO), e("◀ sel.", K.SEL_LEFT), e("sel. ▶", K.SEL_RIGHT)),
+            listOf(abc(3f), del(3.5f), enter(3.5f)),
+        )
+    }
+
+    fun translate(last: String): List<List<Key>> {
+        val langs = Translate.LANGS.map { (code, name) -> Key(name, K.LANG, 2.5f, text = code, on = code == last) }
+        return langs.chunked(4) + listOf(listOf(abc(3f), del(3.5f), enter(3.5f)))
     }
 
     fun numpad(phone: Boolean): List<List<Key>> {

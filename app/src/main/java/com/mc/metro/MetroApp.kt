@@ -178,6 +178,24 @@ object Prefs {
     var kbDoubleSpace: Boolean
         get() = b("kb_double_space", true)
         set(v) = put("kb_double_space", v)
+    var kbNumberRow: Boolean
+        get() = b("kb_number_row", true)
+        set(v) = put("kb_number_row", v)
+    /** Symbol in the corner of each letter, typed with a long press. */
+    var kbHints: Boolean
+        get() = b("kb_hints", true)
+        set(v) = put("kb_hints", v)
+    /** Clipboard history, a JSON array of strings, newest first. */
+    var kbClips: String?
+        get() = sp.getString("kb_clips", null)
+        set(v) = sp.edit().putString("kb_clips", v).apply()
+    var kbRecentEmoji: String?
+        get() = sp.getString("kb_recent_emoji", null)
+        set(v) = sp.edit().putString("kb_recent_emoji", v).apply()
+    /** Last translation target language. */
+    var kbLang: String
+        get() = sp.getString("kb_lang", null) ?: "en"
+        set(v) = sp.edit().putString("kb_lang", v).apply()
 
     /** Folder on the update server holding version.json and the APK. */
     var updateUrl: String

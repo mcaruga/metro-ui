@@ -192,6 +192,8 @@ class SettingsActivity : Activity() {
         button("scegli tastiera", { "passa a Metro tastiera" }) {
             getSystemService(InputMethodManager::class.java)?.showInputMethodPicker()
         }
+        toggle("riga dei numeri", "numeri sopra le lettere", { Prefs.kbNumberRow }) { Prefs.kbNumberRow = it }
+        toggle("simboli sui tasti", "un simbolo nell'angolo di ogni lettera: tieni premuto per scriverlo", { Prefs.kbHints }) { Prefs.kbHints = it }
         toggle("suggerimenti parole", null, { Prefs.kbSuggest }) { Prefs.kbSuggest = it }
         toggle("maiuscola automatica", null, { Prefs.kbAutoCap }) { Prefs.kbAutoCap = it }
         toggle("punto con doppio spazio", null, { Prefs.kbDoubleSpace }) { Prefs.kbDoubleSpace = it }
