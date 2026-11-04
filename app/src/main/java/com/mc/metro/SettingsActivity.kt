@@ -30,6 +30,8 @@ import android.widget.Toast
 class SettingsActivity : Activity() {
     companion object {
         private const val PICK_BG = 7
+        /** Opened from the action center's "modifica": go straight to the quick actions list. */
+        const val EXTRA_QUICK = "com.mc.metro.QUICK"
     }
 
     private lateinit var col: LinearLayout
@@ -38,12 +40,22 @@ class SettingsActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         build()
-        if (savedInstanceState == null) fromNotification(intent)
+        if (savedInstanceState == null) {
+            fromNotification(intent)
+            fromCenter(intent)
+        }
+    }
+
+    private fun fromCenter(i: Intent?) {
+        if (i?.getBooleanExtra(EXTRA_QUICK, false) != true) return
+        i.removeExtra(EXTRA_QUICK)
+        QuickDialog(this) { rebuild() }.show()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         fromNotification(intent)
+        fromCenter(intent)
     }
 
     /** Tapped "Metro X disponibile": check again and show the update prompt. */
@@ -163,6 +175,7 @@ class SettingsActivity : Activity() {
             Prefs.actionCenter = it
             if (it) ensureCenterAccess()
         }
+        button("impostazioni rapide", { "${Prefs.acTiles.size} attive · tocca per aggiungere, togliere e riordinare" }) { QuickDialog(this) { rebuild() }.show() }
         button("permessi centro notifiche", { centerSummary() }) { ensureCenterAccess(true) }
         button("prova il centro notifiche", { if (NavBarService.running) "apre il pannello adesso" else "serve \"Metro barra e centro notifiche\" nei servizi di accessibilità" }) {
             val ac = ActionCenter.current
@@ -831,5 +844,91 @@ class LogoDialog(private val a: Activity, private val done: (Int) -> Unit) : Dia
             grid.addView(cell, GridLayout.LayoutParams().apply { setMargins(5.dp, 5.dp, 5.dp, 10.dp) })
         }
         col.addView(grid)
+    }
+}
+
+/** Add, remove and reorder the action center's quick actions. */
+class QuickDialog(private val a: Activity, private val done: () -> Unit) : Dialog(a, android.R.style.Theme_Material_NoActionBar) {
+    private lateinit var list: LinearLayout
+    private val order = ArrayList<Int>()
+    private val on = HashSet<Int>()
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        window?.setBackgroundDrawable(ColorDrawable(Metro.bg))
+        window?.setDecorFitsSystemWindows(false)
+        val col = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp, 0, 12.dp, 0) }
+        val sv = ScrollView(context).apply { addView(col); isVerticalScrollBarEnabled = false; clipToPadding = false }
+        sv.setOnApplyWindowInsetsListener { v, ins ->
+            val b = ins.getInsets(WindowInsets.Type.systemBars())
+            v.setPadding(0, b.top + 12.dp, 0, b.bottom + 16.dp)
+            ins
+        }
+        setContentView(sv)
+        col.addView(context.label("CENTRO NOTIFICHE", 14f, Metro.fg, Metro.semibold))
+        col.addView(context.label("impostazioni rapide", 40f).apply { setPadding(0, 0, 0, 4.dp) })
+        col.addView(context.label("le prime 4 si vedono sempre, le altre con espandi. Usa ▲ ▼ per spostarle.", 14f, Metro.sub, Metro.regular).apply { maxLines = 3; setPadding(0, 0, 0, 10.dp) })
+        list = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL }
+        col.addView(list)
+        val cur = Prefs.acTiles
+        order += cur
+        order += Q.all.map { it.glyph }.filter { it !in cur }
+        on += cur
+        fill()
+        setOnDismissListener { done() }
+    }
+
+    private fun save() {
+        Prefs.acTiles = order.filter { it in on }
+    }
+
+    private fun move(id: Int, d: Int) {
+        val i = order.indexOf(id)
+        val j = i + d
+        if (j < 0 || j >= order.size) return
+        order[i] = order[j]
+        order[j] = id
+        save()
+        fill()
+    }
+
+    private fun fill() {
+        list.removeAllViews()
+        for (id in order) {
+            val q = Q.all.firstOrNull { it.glyph == id } ?: continue
+            val enabled = id in on
+            val row = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 6.dp, 0, 6.dp)
+            }
+            row.addView(object : View(context) {
+                private val gp = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    style = android.graphics.Paint.Style.STROKE
+                    strokeWidth = 1.8f.dpf
+                    strokeCap = android.graphics.Paint.Cap.ROUND
+                    strokeJoin = android.graphics.Paint.Join.ROUND
+                }
+                override fun onDraw(cv: android.graphics.Canvas) {
+                    cv.drawColor(if (enabled) Prefs.accent else Metro.chrome)
+                    gp.color = if (enabled) Color.WHITE else Metro.fg
+                    Q.draw(cv, q.glyph, width / 2f, height / 2f, width * 0.5f, gp, false)
+                }
+            }, LinearLayout.LayoutParams(44.dp, 44.dp))
+            row.addView(context.label(q.label(false), 18f, if (enabled) Metro.fg else Metro.sub, Metro.regular).apply { setPadding(12.dp, 0, 0, 0) },
+                LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            fun arrow(t: String, d: Int) = context.label(t, 18f, Metro.fg, Metro.regular).apply {
+                gravity = Gravity.CENTER
+                isClickable = true
+                setOnClickListener { move(id, d) }
+            }
+            row.addView(arrow("▲", -1), LinearLayout.LayoutParams(40.dp, 44.dp))
+            row.addView(arrow("▼", 1), LinearLayout.LayoutParams(40.dp, 44.dp))
+            val t = MetroToggle(context)
+            t.set(enabled)
+            t.onChange = { v -> if (v) on += id else on -= id; save(); list.post { fill() } }
+            row.addView(t, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = 6.dp })
+            list.addView(row)
+        }
     }
 }

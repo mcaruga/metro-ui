@@ -150,6 +150,10 @@ object Prefs {
     var actionCenter: Boolean
         get() = b("action_center", false)
         set(v) = put("action_center", v)
+    /** Quick action ids (Q.*) in the action center, in order. */
+    var acTiles: List<Int>
+        get() = sp.getString("ac_tiles", null)?.split(',')?.mapNotNull { it.toIntOrNull() } ?: Q.DEFAULT
+        set(v) = sp.edit().putString("ac_tiles", v.joinToString(",")).apply()
     var acExpanded: Boolean
         get() = b("ac_expanded", false)
         set(v) = put("ac_expanded", v)

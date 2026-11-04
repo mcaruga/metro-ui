@@ -301,8 +301,8 @@ class ActionCenter(private val svc: AccessibilityService) {
 
 private const val SLIDE_MS = 320f
 
-/** One quick action: state, tap, and the system page a long press opens. */
-private class Quick(
+/** One quick action: state, tap, and the system page a long press opens. [glyph] is also its id. */
+class Quick(
     val glyph: Int,
     val label: (Boolean) -> String,
     val state: (Context, ActionCenter) -> Boolean,
@@ -310,7 +310,7 @@ private class Quick(
     val tap: (Context, ActionCenter) -> Unit,
 )
 
-private object Q {
+object Q {
     const val WIFI = 0
     const val BT = 1
     const val ROTATE = 2
@@ -325,6 +325,38 @@ private object Q {
     const val LOCK = 11
     const val SUN = 12
     const val BELL = 13
+    const val MUSIC = 14
+    const val SCREEN_REC = 15
+    const val AUDIO_REC = 16
+    const val VOLUME = 17
+    const val HOTSPOT = 18
+    const val NFC = 19
+    const val DATA = 20
+    const val CAST = 21
+    const val SYNC = 22
+    const val CAMERA = 23
+    const val CALC = 24
+    const val ALARM = 25
+
+    /** The first twelve, in this order, until the user changes them. */
+    val DEFAULT = listOf(WIFI, BT, ROTATE, TORCH, DND, RINGER, PLANE, LOCATION, AUTO, SAVER, SHOT, LOCK)
+
+    /** Quick actions shown in the panel, in the user's order. */
+    fun enabled(): List<Quick> = Prefs.acTiles.mapNotNull { id -> all.firstOrNull { it.glyph == id } }
+
+    private fun pm(c: Context) = c.packageManager
+    private fun resolves(c: Context, i: Intent) = i.resolveActivity(pm(c)) != null
+
+    /** Shazam if installed, then the Google app's song search, else Shazam on the Play Store. */
+    private fun music(c: Context): Intent {
+        val shazam = Intent("com.shazam.android.intent.actions.START_TAGGING").setPackage("com.shazam.android")
+        val google = Intent("com.google.android.googlequicksearchbox.MUSIC_SEARCH")
+        return listOfNotNull(shazam, pm(c).getLaunchIntentForPackage("com.shazam.android"), google).firstOrNull { resolves(c, it) }
+            ?: Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=com.shazam.android"))
+    }
+
+    private fun first(c: Context, vararg list: Intent?): Intent =
+        list.filterNotNull().firstOrNull { resolves(c, it) } ?: list.filterNotNull().last()
 
     private fun canWrite(c: Context) = Settings.System.canWrite(c)
 
@@ -379,6 +411,36 @@ private object Q {
             Settings.ACTION_BATTERY_SAVER_SETTINGS) { _, ac -> ac.launch(Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS)) },
         Quick(SHOT, { "screenshot" }, { _, _ -> false }, null) { _, ac -> ac.global(AccessibilityService.GLOBAL_ACTION_TAKE_SCREENSHOT) },
         Quick(LOCK, { "blocca" }, { _, _ -> false }, null) { _, ac -> ac.global(AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN) },
+        Quick(MUSIC, { "riconosci musica" }, { _, _ -> false }, null) { c, ac -> ac.launch(music(c)) },
+        Quick(SCREEN_REC, { if (it) "ferma registrazione" else "registra schermo" }, { _, _ -> Recorder.running == Recorder.SCREEN }, null) { c, ac ->
+            if (Recorder.running != null) Recorder.stop(c) else ac.launch(Recorder.intent(c, Recorder.SCREEN))
+        },
+        Quick(AUDIO_REC, { if (it) "ferma registrazione" else "registra audio" }, { _, _ -> Recorder.running == Recorder.AUDIO }, null) { c, ac ->
+            if (Recorder.running != null) Recorder.stop(c) else ac.launch(Recorder.intent(c, Recorder.AUDIO))
+        },
+        Quick(VOLUME, { "volume" }, { _, _ -> false }, Settings.ACTION_SOUND_SETTINGS) { c, ac ->
+            ac.close {
+                c.getSystemService(AudioManager::class.java).adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_SAME, AudioManager.FLAG_SHOW_UI)
+            }
+        },
+        Quick(HOTSPOT, { "hotspot" }, { _, _ -> false }, null) { c, ac ->
+            ac.launch(first(c, Intent().setClassName("com.android.settings", "com.android.settings.TetherSettings"), Intent(Settings.ACTION_WIRELESS_SETTINGS)))
+        },
+        Quick(NFC, { "NFC" }, { c, _ -> runCatching { android.nfc.NfcAdapter.getDefaultAdapter(c)?.isEnabled == true }.getOrDefault(false) },
+            Settings.ACTION_NFC_SETTINGS) { c, ac -> ac.launch(first(c, Intent(Settings.Panel.ACTION_NFC), Intent(Settings.ACTION_NFC_SETTINGS))) },
+        Quick(DATA, { "dati mobili" }, { c, _ -> Settings.Global.getInt(c.contentResolver, "mobile_data", 0) == 1 },
+            Settings.ACTION_DATA_ROAMING_SETTINGS) { _, ac -> ac.launch(Intent(Settings.Panel.ACTION_INTERNET_CONNECTIVITY)) },
+        Quick(CAST, { "trasmetti" }, { _, _ -> false }, null) { _, ac -> ac.launch(Intent(Settings.ACTION_CAST_SETTINGS)) },
+        Quick(SYNC, { "sincronizza" }, { _, _ -> android.content.ContentResolver.getMasterSyncAutomatically() },
+            Settings.ACTION_SYNC_SETTINGS) { _, _ ->
+            android.content.ContentResolver.setMasterSyncAutomatically(!android.content.ContentResolver.getMasterSyncAutomatically())
+        },
+        Quick(CAMERA, { "fotocamera" }, { _, _ -> false }, null) { _, ac -> ac.launch(Intent(android.provider.MediaStore.INTENT_ACTION_STILL_IMAGE_CAMERA)) },
+        Quick(CALC, { "calcolatrice" }, { _, _ -> false }, null) { c, ac ->
+            ac.launch(first(c, Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_CALCULATOR),
+                pm(c).getLaunchIntentForPackage("com.sec.android.app.popupcalculator"), pm(c).getLaunchIntentForPackage("com.google.android.calculator")))
+        },
+        Quick(ALARM, { "sveglie" }, { _, _ -> false }, null) { _, ac -> ac.launch(Intent(android.provider.AlarmClock.ACTION_SHOW_ALARMS)) },
     )
 
     private val path = Path()
@@ -520,6 +582,104 @@ private object Q {
                     cv.drawLine(x, y, x, y - dy * a, p)
                 }
                 cv.drawCircle(cx, cy, s * 0.12f, p)
+            }
+            MUSIC -> {
+                cv.drawCircle(cx - s * 0.2f, cy + s * 0.28f, s * 0.13f, p)
+                cv.drawCircle(cx + s * 0.26f, cy + s * 0.18f, s * 0.13f, p)
+                cv.drawLine(cx - s * 0.07f, cy + s * 0.28f, cx - s * 0.07f, cy - s * 0.36f, p)
+                cv.drawLine(cx + s * 0.39f, cy + s * 0.18f, cx + s * 0.39f, cy - s * 0.46f, p)
+                cv.drawLine(cx - s * 0.07f, cy - s * 0.36f, cx + s * 0.39f, cy - s * 0.46f, p)
+            }
+            SCREEN_REC -> {
+                cv.drawCircle(cx, cy, s * 0.4f, p)
+                p.style = Paint.Style.FILL
+                if (on) cv.drawRect(cx - s * 0.14f, cy - s * 0.14f, cx + s * 0.14f, cy + s * 0.14f, p)
+                else cv.drawCircle(cx, cy, s * 0.18f, p)
+                p.style = Paint.Style.STROKE
+            }
+            AUDIO_REC -> {
+                rect.set(cx - s * 0.14f, cy - s * 0.44f, cx + s * 0.14f, cy + s * 0.12f)
+                cv.drawRoundRect(rect, s * 0.14f, s * 0.14f, p)
+                rect.set(cx - s * 0.28f, cy - s * 0.2f, cx + s * 0.28f, cy + s * 0.28f)
+                cv.drawArc(rect, 0f, 180f, false, p)
+                cv.drawLine(cx, cy + s * 0.28f, cx, cy + s * 0.44f, p)
+                if (on) { p.style = Paint.Style.FILL; cv.drawCircle(cx + s * 0.36f, cy - s * 0.36f, s * 0.08f, p); p.style = Paint.Style.STROKE }
+            }
+            VOLUME -> {
+                path.moveTo(cx - s * 0.4f, cy - s * 0.12f)
+                path.lineTo(cx - s * 0.2f, cy - s * 0.12f)
+                path.lineTo(cx + s * 0.04f, cy - s * 0.34f)
+                path.lineTo(cx + s * 0.04f, cy + s * 0.34f)
+                path.lineTo(cx - s * 0.2f, cy + s * 0.12f)
+                path.lineTo(cx - s * 0.4f, cy + s * 0.12f)
+                path.close()
+                cv.drawPath(path, p)
+                rect.set(cx - s * 0.1f, cy - s * 0.24f, cx + s * 0.3f, cy + s * 0.24f)
+                cv.drawArc(rect, -50f, 100f, false, p)
+                rect.set(cx - s * 0.2f, cy - s * 0.4f, cx + s * 0.44f, cy + s * 0.4f)
+                cv.drawArc(rect, -50f, 100f, false, p)
+            }
+            HOTSPOT -> {
+                p.style = Paint.Style.FILL
+                cv.drawCircle(cx, cy, s * 0.08f, p)
+                p.style = Paint.Style.STROKE
+                for (r in floatArrayOf(0.24f, 0.42f)) {
+                    rect.set(cx - r * s, cy - r * s, cx + r * s, cy + r * s)
+                    cv.drawArc(rect, -230f, 100f, false, p)
+                    cv.drawArc(rect, -50f, 100f, false, p)
+                }
+            }
+            NFC -> {
+                rect.set(cx - s * 0.38f, cy - s * 0.38f, cx + s * 0.38f, cy + s * 0.38f)
+                cv.drawRoundRect(rect, s * 0.1f, s * 0.1f, p)
+                cv.drawLine(cx - s * 0.16f, cy + s * 0.18f, cx - s * 0.16f, cy - s * 0.18f, p)
+                cv.drawLine(cx - s * 0.16f, cy - s * 0.18f, cx + s * 0.16f, cy + s * 0.18f, p)
+                cv.drawLine(cx + s * 0.16f, cy + s * 0.18f, cx + s * 0.16f, cy - s * 0.18f, p)
+            }
+            DATA -> {
+                cv.drawLine(cx - s * 0.16f, cy + s * 0.4f, cx - s * 0.16f, cy - s * 0.4f, p)
+                arrowHead(cv, cx - s * 0.16f, cy - s * 0.4f, 0f, -1f, s * 0.18f, p)
+                cv.drawLine(cx + s * 0.16f, cy - s * 0.4f, cx + s * 0.16f, cy + s * 0.4f, p)
+                arrowHead(cv, cx + s * 0.16f, cy + s * 0.4f, 0f, 1f, s * 0.18f, p)
+            }
+            CAST -> {
+                cv.drawLine(cx - s * 0.42f, cy - s * 0.12f, cx - s * 0.42f, cy - s * 0.34f, p)
+                cv.drawLine(cx - s * 0.42f, cy - s * 0.34f, cx + s * 0.42f, cy - s * 0.34f, p)
+                cv.drawLine(cx + s * 0.42f, cy - s * 0.34f, cx + s * 0.42f, cy + s * 0.34f, p)
+                cv.drawLine(cx + s * 0.42f, cy + s * 0.34f, cx + s * 0.02f, cy + s * 0.34f, p)
+                for (r in floatArrayOf(0.2f, 0.38f)) {
+                    rect.set(cx - s * 0.42f - r * s, cy + s * 0.34f - r * s, cx - s * 0.42f + r * s, cy + s * 0.34f + r * s)
+                    cv.drawArc(rect, -90f, 90f, false, p)
+                }
+            }
+            SYNC -> {
+                val r = s * 0.34f
+                rect.set(cx - r, cy - r, cx + r, cy + r)
+                cv.drawArc(rect, 200f, 140f, false, p)
+                cv.drawArc(rect, 20f, 140f, false, p)
+                arrowHead(cv, cx + r * cos(Math.toRadians(340.0)).toFloat(), cy + r * sin(Math.toRadians(340.0)).toFloat(), -0.34f, -0.94f, s * 0.16f, p)
+                arrowHead(cv, cx + r * cos(Math.toRadians(160.0)).toFloat(), cy + r * sin(Math.toRadians(160.0)).toFloat(), 0.34f, 0.94f, s * 0.16f, p)
+            }
+            CAMERA -> {
+                cv.drawRect(cx - s * 0.42f, cy - s * 0.24f, cx + s * 0.42f, cy + s * 0.34f, p)
+                cv.drawLine(cx - s * 0.16f, cy - s * 0.24f, cx - s * 0.08f, cy - s * 0.36f, p)
+                cv.drawLine(cx - s * 0.08f, cy - s * 0.36f, cx + s * 0.16f, cy - s * 0.36f, p)
+                cv.drawLine(cx + s * 0.16f, cy - s * 0.36f, cx + s * 0.24f, cy - s * 0.24f, p)
+                cv.drawCircle(cx, cy + s * 0.05f, s * 0.15f, p)
+            }
+            CALC -> {
+                cv.drawRect(cx - s * 0.32f, cy - s * 0.44f, cx + s * 0.32f, cy + s * 0.44f, p)
+                cv.drawRect(cx - s * 0.2f, cy - s * 0.32f, cx + s * 0.2f, cy - s * 0.14f, p)
+                p.style = Paint.Style.FILL
+                for (i in 0..2) for (j in 0..2) cv.drawCircle(cx - s * 0.16f + i * s * 0.16f, cy + s * 0.02f + j * s * 0.14f, s * 0.035f, p)
+                p.style = Paint.Style.STROKE
+            }
+            ALARM -> {
+                cv.drawCircle(cx, cy + s * 0.04f, s * 0.36f, p)
+                cv.drawLine(cx, cy + s * 0.04f, cx, cy - s * 0.18f, p)
+                cv.drawLine(cx, cy + s * 0.04f, cx + s * 0.16f, cy + s * 0.12f, p)
+                cv.drawLine(cx - s * 0.42f, cy - s * 0.3f, cx - s * 0.24f, cy - s * 0.44f, p)
+                cv.drawLine(cx + s * 0.42f, cy - s * 0.3f, cx + s * 0.24f, cy - s * 0.44f, p)
             }
             LOCK -> {
                 cv.drawRect(cx - s * 0.28f, cy - s * 0.04f, cx + s * 0.28f, cy + s * 0.42f, p)
@@ -830,14 +990,17 @@ private class Panel(private val c: Context, private val ac: ActionCenter, status
         fun layout() {
             grid.removeAllViews()
             tiles.clear()
-            val n = if (Prefs.acExpanded) Q.all.size else 4
-            Q.all.take(n).chunked(4).forEach { chunk ->
+            val list = Q.enabled()
+            val n = if (Prefs.acExpanded) list.size else 4
+            list.take(n).chunked(4).forEach { chunk ->
                 val r = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
                 chunk.forEachIndexed { i, q ->
                     val t = QuickTile(c, q, ac)
                     tiles += t
                     r.addView(t, LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f).apply { if (i < 3) rightMargin = 6.dp })
                 }
+                // A short last row keeps square tiles.
+                for (i in chunk.size until 4) r.addView(View(c), LinearLayout.LayoutParams(0, 1, 1f).apply { if (i < 3) rightMargin = 6.dp })
                 grid.addView(r, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT).apply { bottomMargin = 6.dp })
             }
             more.text = if (Prefs.acExpanded) "RIDUCI" else "ESPANDI"
@@ -845,7 +1008,18 @@ private class Panel(private val c: Context, private val ac: ActionCenter, status
         }
         more.setOnClickListener { Prefs.acExpanded = !Prefs.acExpanded; layout() }
         layout()
-        sheet.addView(more, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
+        val edit = c.label("MODIFICA", 13f, Metro.fg, Metro.semibold).apply {
+            setPadding(0, 6.dp, 0, 6.dp)
+            letterSpacing = 0.04f
+            isClickable = true
+            setOnClickListener {
+                ac.launch(Intent(c, SettingsActivity::class.java).putExtra(SettingsActivity.EXTRA_QUICK, true))
+            }
+        }
+        val bar = LinearLayout(c).apply { orientation = LinearLayout.HORIZONTAL }
+        bar.addView(edit, LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
+        bar.addView(more, LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f))
+        sheet.addView(bar, LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT))
     }
 
     fun refreshTiles() = tiles.forEach { it.refresh() }
