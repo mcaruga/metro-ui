@@ -145,8 +145,9 @@ class SettingsActivity : Activity() {
         }
         toggle("copertine musica e video", "i riquadri delle app musica/video mostrano la copertina in riproduzione (serve l'accesso alle notifiche)", { Prefs.covers }) { Prefs.covers = it }
         choice("cambio foto", listOf("5 s" to 5f, "15 s" to 15f, "1 min" to 60f, "5 min" to 300f, "casuale" to 0f), { Prefs.photoInterval.toFloat() }) { Prefs.photoInterval = it.toInt() }
+        choice("dimensione fusi orari", listOf("piccola" to 0.7f, "media" to 0.85f, "grande" to 1f), { Prefs.zoneScale }) { Prefs.zoneScale = it }
         button("fusi orari orologio", { Prefs.clockZones.joinToString(", ") { Zones.name(it) }.ifEmpty { "nessuno · tocca per aggiungere città" } }) { zonesDialog() }
-        button("città meteo", { Prefs.weatherCity ?: "posizione attuale" }) { cityDialog() }
+        button("città meteo", { Prefs.weatherCity ?: "automatica: posizione già nota o rete internet, senza GPS" + (Live.weather?.city?.let { " · $it" } ?: "") }) { cityDialog() }
         toggle("foto della città sul meteo", "immagine della città da Wikipedia con l'animazione del tempo", { Prefs.cityPhoto }) {
             Prefs.cityPhoto = it
             Live.refresh(this, true)
@@ -369,7 +370,7 @@ class SettingsActivity : Activity() {
                 }
             }.start()
         }, LinearLayout.LayoutParams(0, 48.dp, 1f).apply { rightMargin = 8.dp })
-        row.addView(btn("usa posizione") {
+        row.addView(btn("automatica") {
             Prefs.weatherCity = null
             Live.clearCityPhoto()
             Live.refresh(this, true)

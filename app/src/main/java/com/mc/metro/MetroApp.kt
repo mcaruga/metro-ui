@@ -32,6 +32,7 @@ class MetroApp : Application() {
         runCatching {
             Updater.clearNotification(this)
             Updater.schedule(this)
+            WeatherJob.schedule(this)
         }
     }
 }
@@ -79,6 +80,10 @@ object Prefs {
     var tileFg: Int
         get() = sp.getInt("tile_fg", Color.WHITE)
         set(v) { sp.edit().putInt("tile_fg", v or 0xFF000000.toInt()).apply(); bump() }
+    /** Size of the extra time zones on the clock tile, as a share of the space they have. */
+    var zoneScale: Float
+        get() = sp.getFloat("zone_scale", 1f)
+        set(v) { sp.edit().putFloat("zone_scale", v).apply(); bump() }
     /** Extra time zones on the clock tile, TimeZone ids separated by ','. */
     var clockZones: List<String>
         get() = sp.getString("clock_zones", null)?.split(',')?.filter { it.isNotBlank() }.orEmpty()
@@ -101,6 +106,20 @@ object Prefs {
         get() = b("city_photo", true)
         set(v) = put("city_photo", v)
     /** Manual weather city; null = current position. */
+    /** Last forecast (Live.Weather json), shown at start before the network answers. */
+    var weatherCache: String?
+        get() = sp.getString("w_cache", null)
+        set(v) = sp.edit().putString("w_cache", v).apply()
+    /** Last automatic place that gave a forecast (used when offline). */
+    var lastPlaceLat: Float
+        get() = sp.getFloat("p_lat", 0f)
+        set(v) = sp.edit().putFloat("p_lat", v).apply()
+    var lastPlaceLon: Float
+        get() = sp.getFloat("p_lon", 0f)
+        set(v) = sp.edit().putFloat("p_lon", v).apply()
+    var lastPlaceCity: String?
+        get() = sp.getString("p_city", null)
+        set(v) = sp.edit().putString("p_city", v).apply()
     var weatherCity: String?
         get() = sp.getString("w_city", null)
         set(v) = sp.edit().putString("w_city", v).apply()

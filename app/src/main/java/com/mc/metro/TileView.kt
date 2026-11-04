@@ -192,7 +192,7 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
     private fun weatherFaces(): List<Face> {
         val w = Live.weather
         if (w == null) {
-            val msg = if (Live.hasLocation(context)) "aggiornamento…" else "tocca per attivare la posizione"
+            val msg = "aggiornamento…"
             return listOf(if (small) Face(Face.TEXT, big = "--°") else Face(Face.TEXT, big = "--°", lines = listOf(msg)))
         }
         val glyph = Live.wmoGlyph(w.code)
@@ -237,6 +237,7 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
 
     override fun onDetachedFromWindow() {
         removeCallbacks(photoTimer)
+        flipAnim?.cancel()
         super.onDetachedFromWindow()
     }
 
@@ -306,19 +307,61 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
         if (anim && Live.fx && isShown && (fade < 1f || k < 1f)) postInvalidateDelayed(33)
     }
 
+    /**
+     * Flip drawn on the canvas with its own animator, so the tilt and the launch turnstile
+     * (which animate the view itself) can never interrupt it and leave the tile half-turned.
+     */
     private fun turn(swap: () -> Unit) {
         if (!Prefs.animations || width == 0) {
             swap(); invalidate(); return
         }
         flipping = true
-        pivotX = width / 2f
-        pivotY = height / 2f
-        an(220, 0, AccelerateInterpolator()).rotationX(90f).withEndAction {
-            swap()
-            invalidate()
-            rotationX = -90f
-            an(260).rotationX(0f).withEndAction { flipping = false }.start()
-        }.start()
+        var swapped = false
+        flipAnim = android.animation.ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 480
+            interpolator = android.view.animation.AccelerateDecelerateInterpolator()
+            addUpdateListener { a ->
+                val v = a.animatedValue as Float
+                if (v >= 0.5f && !swapped) { swapped = true; swap() }
+                flipDeg = if (v < 0.5f) v * 180f else (v - 1f) * 180f
+                invalidate()
+            }
+            // Runs after a cancel too: the tile always ends flat, on the new face.
+            addListener(object : android.animation.AnimatorListenerAdapter() {
+                override fun onAnimationEnd(a: android.animation.Animator) {
+                    if (!swapped) { swapped = true; swap() }
+                    flipDeg = 0f
+                    flipping = false
+                    flipAnim = null
+                    invalidate()
+                }
+            })
+            start()
+        }
+    }
+
+    private var flipDeg = 0f
+    private var flipAnim: android.animation.ValueAnimator? = null
+    private val cam = android.graphics.Camera()
+    private val camM = android.graphics.Matrix()
+
+    private fun applyFlip(cv: Canvas) {
+        if (flipDeg == 0f) return
+        cam.save()
+        cam.setLocation(0f, 0f, -9000f / 160f)
+        cam.rotateX(flipDeg)
+        cam.getMatrix(camM)
+        cam.restore()
+        camM.preTranslate(-width / 2f, -height / 2f)
+        camM.postTranslate(width / 2f, height / 2f)
+        cv.concat(camM)
+    }
+
+    /** Straightens a tile left tilted or turned by an interrupted animation. */
+    fun settle() {
+        if (pressing || grid.editing) return
+        if (rotationX != 0f || rotationY != 0f || scaleX != baseScale || alpha != 1f) resetTransforms()
+        if (flipping && flipAnim == null) flipping = false
     }
 
     // ---- drawing -----------------------------------------------------------------------------
@@ -331,6 +374,7 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
         if (tile.kind == Tile.WEATHER) tp.setShadowLayer(3.dpf, 0f, 1.dpf, 0x99000000.toInt()) else tp.clearShadowLayer()
         // The grid doesn't clip children (tilt/flip draw outside), so clip the content here.
         cv.clipRect(0f, 0f, w, h)
+        applyFlip(cv)
         val wall = Wall.bitmap
         if (tile.kind == Tile.EMPTY) {
             drawEmpty(cv, wall)
@@ -390,61 +434,156 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
         val zones = Prefs.clockZones
         tp.color = fg
         val time = DateFormat.getTimeFormat(context).format(now)
-        val day = SimpleDateFormat("EEEE d MMMM", Locale.getDefault()).format(now)
+        val alarm = nextAlarm()
         if (tile.size == TSize.LARGE) {
             tp.typeface = Metro.light
             tp.textSize = min(h * 0.2f, 76.sp) * ts
             var y = pad - tp.ascent() * 0.92f
             cv.drawText(time, pad - tp.textSize * 0.04f, y, tp)
-            tp.typeface = Metro.regular
-            tp.textSize = 15.sp * ts
-            y += tp.fontSpacing + 2.dpf
-            cv.drawText(TextUtils.ellipsize(day, tp, w - 2 * pad, TextUtils.TruncateAt.END).toString(), pad, y, tp)
-            y += 12.dpf
-            p.color = (fg and 0xFFFFFF) or 0x55000000
-            cv.drawRect(pad, y, w - pad, y + 1.dpf, p)
-            val shown = zones.take(4)
-            val rowH = (h - y - pad) / 4
-            for ((i, z) in shown.withIndex()) zoneRow(cv, z, pad, y + i * rowH, w - pad, rowH, 30.sp * ts)
+            y += tp.descent()
+            y = infoLines(cv, SimpleDateFormat("EEEE d MMMM", Locale.getDefault()).format(now), alarm, pad, y, w - 2 * pad)
+            y += 8.dpf
+            divider(cv, 0f, y, w, y)
+            val shown = zones.take(Zones.MAX)
+            if (shown.size <= 2) {
+                val rowH = (h - y) / shown.size
+                for ((i, z) in shown.withIndex()) {
+                    val top = y + i * rowH
+                    if (i > 0) divider(cv, 0f, top, w, top)
+                    zoneRow(cv, z, pad, top, w - pad, rowH)
+                }
+            } else {
+                // 2 x 2 board: the dark lines frame each city like a small tile.
+                val cw = w / 2
+                val ch = (h - y) / 2
+                divider(cv, cw, y, cw, h)
+                divider(cv, 0f, y + ch, w, y + ch)
+                for ((i, z) in shown.withIndex()) zoneCell(cv, z, (i % 2) * cw, y + (i / 2) * ch, cw, ch)
+            }
         } else {
-            // Wide: home time on the left, up to two zones stacked on the right.
+            // Wide: home time on the left, zones stacked on the right of a dark divider.
             val split = w * 0.5f
             tp.typeface = Metro.light
             tp.textSize = min(h * 0.34f, 64.sp) * ts
-            while (tp.measureText(time) > split - pad && tp.textSize > 12.sp) tp.textSize *= 0.92f
+            while (tp.measureText(time) > split - 2 * pad && tp.textSize > 12.sp) tp.textSize *= 0.92f
             var y = pad - tp.ascent() * 0.92f
             cv.drawText(time, pad - tp.textSize * 0.04f, y, tp)
-            tp.typeface = Metro.regular
-            tp.textSize = 14.sp * ts
-            for (line in listOf(SimpleDateFormat("EEEE", Locale.getDefault()).format(now), SimpleDateFormat("d MMMM", Locale.getDefault()).format(now))) {
-                y += tp.fontSpacing
-                cv.drawText(TextUtils.ellipsize(line, tp, split - pad, TextUtils.TruncateAt.END).toString(), pad, y, tp)
-            }
+            y += tp.descent()
+            infoLines(cv, SimpleDateFormat("EEE d MMM", Locale.getDefault()).format(now), alarm, pad, y, split - 2 * pad)
+            divider(cv, split, 0f, split, h)
             val shown = zones.take(2)
-            val rowH = (h - 2 * pad) / 2
-            val top = pad + (h - 2 * pad - rowH * shown.size) / 2
-            for ((i, z) in shown.withIndex()) zoneRow(cv, z, split + 4.dpf, top + i * rowH, w - pad, rowH, 24.sp * ts)
+            val rowH = h / shown.size
+            for ((i, z) in shown.withIndex()) {
+                val top = i * rowH
+                if (i > 0) divider(cv, split, top, w, top)
+                // Half width is narrow: city above, time below, so neither gets cut.
+                zoneCell(cv, z, split, top, w - split, rowH)
+            }
         }
     }
 
-    /** City and relative day on the left, its time on the right, within one row. */
-    private fun zoneRow(cv: Canvas, z: String, x0: Float, top: Float, x1: Float, rowH: Float, timeSize: Float) {
+    /** Next alarm set in the clock app ("07:30 gio"); Android only exposes the next one. */
+    private fun nextAlarm(): String? {
+        val a = try { context.getSystemService(AlarmManager::class.java)?.nextAlarmClock } catch (e: Exception) { null } ?: return null
+        val at = Date(a.triggerTime)
+        val t = DateFormat.getTimeFormat(context).format(at)
+        return when {
+            DateUtils.isToday(a.triggerTime) -> t
+            DateUtils.isToday(a.triggerTime - DateUtils.DAY_IN_MILLIS) -> "$t domani"
+            else -> t + " " + SimpleDateFormat("EEE", Locale.getDefault()).format(at)
+        }
+    }
+
+    /** Date, then the alarm with a small clock glyph, under the big time. Returns the new y. */
+    private fun infoLines(cv: Canvas, date: String, alarm: String?, x: Float, y0: Float, avail: Float): Float {
+        var y = y0
+        tp.color = fg
+        tp.typeface = Metro.regular
+        tp.textSize = 15.sp * Prefs.textScale
+        y += -tp.ascent()
+        cv.drawText(TextUtils.ellipsize(date, tp, avail, TextUtils.TruncateAt.END).toString(), x, y, tp)
+        y += tp.descent()
+        if (alarm != null) {
+            tp.typeface = Metro.semibold
+            y += -tp.ascent() + 2.dpf
+            val r = tp.textSize * 0.38f
+            alarmGlyph(cv, x + r, y - tp.textSize * 0.34f, r)
+            cv.drawText(TextUtils.ellipsize(alarm, tp, avail - 2 * r - 6.dpf, TextUtils.TruncateAt.END).toString(), x + 2 * r + 6.dpf, y, tp)
+            y += tp.descent()
+        }
+        return y
+    }
+
+    private fun alarmGlyph(cv: Canvas, cx: Float, cy: Float, r: Float) {
+        p.color = fg
+        p.style = Paint.Style.STROKE
+        p.strokeWidth = r * 0.22f
+        p.strokeCap = Paint.Cap.ROUND
+        cv.drawCircle(cx, cy, r, p)
+        cv.drawLine(cx, cy, cx, cy - r * 0.6f, p)
+        cv.drawLine(cx, cy, cx + r * 0.45f, cy + r * 0.2f, p)
+        // Bells.
+        cv.drawLine(cx - r * 0.95f, cy - r * 0.95f, cx - r * 0.45f, cy - r * 1.3f, p)
+        cv.drawLine(cx + r * 0.95f, cy - r * 0.95f, cx + r * 0.45f, cy - r * 1.3f, p)
+        p.style = Paint.Style.FILL
+        p.strokeCap = Paint.Cap.BUTT
+    }
+
+    /** Soft dark line between the parts of the clock board. */
+    private fun divider(cv: Canvas, x0: Float, y0: Float, x1: Float, y1: Float) {
+        p.color = 0x47000000
+        val t = 2.dpf
+        if (x0 == x1) cv.drawRect(x0 - t / 2, y0, x0 + t / 2, y1, p) else cv.drawRect(x0, y0 - t / 2, x1, y0 + t / 2, p)
+    }
+
+    /** Largest size (capped) at which [s] fits in maxW, scaled by "dimensione fusi orari". */
+    private fun fit(s: String, maxW: Float, maxSize: Float): Float {
+        tp.textSize = maxSize
+        val mw = tp.measureText(s)
+        val size = if (mw > maxW) maxSize * maxW / mw else maxSize
+        return size * Prefs.zoneScale
+    }
+
+    /** Row: city and "oggi · +6 h" on the left, the time as large as the row allows on the right. */
+    private fun zoneRow(cv: Canvas, z: String, x0: Float, top: Float, x1: Float, rowH: Float) {
         val ts = Prefs.textScale
-        tp.typeface = Metro.light
-        tp.textSize = timeSize
         val t = Zones.time(context, z)
+        tp.color = fg
+        tp.typeface = Metro.light
+        tp.textSize = fit(t, (x1 - x0) * 0.6f, min(rowH * 0.56f, 72.sp))
         val tw = tp.measureText(t)
         val cy = top + rowH / 2
         cv.drawText(t, x1 - tw, cy - (tp.ascent() + tp.descent()) / 2, tp)
         val avail = (x1 - tw - 8.dpf - x0).coerceAtLeast(0f)
         tp.typeface = Metro.semibold
-        tp.textSize = 15.sp * ts
+        tp.textSize = min(18.sp * ts, rowH * 0.26f) * Prefs.zoneScale.coerceAtLeast(0.85f)
         cv.drawText(TextUtils.ellipsize(Zones.name(z), tp, avail, TextUtils.TruncateAt.END).toString(), x0, cy - 1.dpf, tp)
-        val sub = Zones.relative(z)
         tp.typeface = Metro.regular
-        tp.textSize = 12.sp * ts
+        tp.textSize *= 0.8f
         tp.alpha = 190
-        cv.drawText(TextUtils.ellipsize(sub, tp, avail, TextUtils.TruncateAt.END).toString(), x0, cy - 1.dpf + tp.fontSpacing, tp)
+        cv.drawText(TextUtils.ellipsize(Zones.relative(z), tp, avail, TextUtils.TruncateAt.END).toString(), x0, cy - 1.dpf + tp.fontSpacing, tp)
+        tp.alpha = 255
+    }
+
+    /** Cell of the 2 x 2 board: city on top, big time, "oggi · +6 h" below. */
+    private fun zoneCell(cv: Canvas, z: String, x: Float, y: Float, cw: Float, ch: Float) {
+        val pad = 10.dpf
+        val ts = Prefs.textScale
+        val avail = cw - 2 * pad
+        tp.color = fg
+        tp.typeface = Metro.semibold
+        tp.textSize = min(17.sp * ts, ch * 0.17f)
+        var yy = y + pad - tp.ascent()
+        cv.drawText(TextUtils.ellipsize(Zones.name(z), tp, avail, TextUtils.TruncateAt.END).toString(), x + pad, yy, tp)
+        val t = Zones.time(context, z)
+        tp.typeface = Metro.light
+        tp.textSize = fit(t, avail, min(ch * 0.42f, 60.sp))
+        yy += -tp.ascent() * 0.95f + 2.dpf
+        cv.drawText(t, x + pad - tp.textSize * 0.03f, yy, tp)
+        tp.typeface = Metro.regular
+        tp.textSize = min(13.sp * ts, ch * 0.13f)
+        tp.alpha = 190
+        cv.drawText(TextUtils.ellipsize(Zones.relative(z), tp, avail, TextUtils.TruncateAt.END).toString(), x + pad, y + ch - pad, tp)
         tp.alpha = 255
     }
 
@@ -609,13 +748,15 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
             val dw = photo.width * sc
             val dh = photo.height * sc
             cv.drawBitmap(photo, null, RectF((w - dw) / 2, (h - dh) / 2, (w + dw) / 2, (h + dh) / 2), bp)
-            p.color = 0x59000000
-            cv.drawRect(0f, 0f, w, h, p)
+            if (!Prefs.animations) {
+                p.color = 0x59000000
+                cv.drawRect(0f, 0f, w, h, p)
+            }
         }
         val wx = Live.weather ?: return
         if (!Prefs.animations) return
         val f = fx ?: WeatherFx().also { fx = it }
-        f.draw(cv, w, h, wx.code, wx.isDay)
+        f.draw(cv, w, h, wx.code, wx.isDay, photo != null)
         if (Live.fx && isShown) postInvalidateOnAnimation()
     }
 
@@ -754,6 +895,7 @@ class TileView(c: Context, val tile: Tile, private val grid: TileGrid) : View(c)
 
     fun resetTransforms() {
         animate().cancel()
+        flipAnim?.cancel()
         rotationX = 0f
         rotationY = 0f
         alpha = 1f

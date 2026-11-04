@@ -1,66 +1,73 @@
 package com.mc.metro
 
 import android.graphics.Bitmap
+import android.graphics.BlurMaskFilter
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.PorterDuff
-import android.graphics.PorterDuffColorFilter
+import android.graphics.PorterDuffXfermode
 import android.graphics.RadialGradient
 import android.graphics.RectF
 import android.graphics.Shader
 import kotlin.math.PI
 import kotlin.math.cos
-import kotlin.math.exp
-import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sin
-import kotlin.math.sqrt
 import kotlin.random.Random
 
 /**
- * Animated sky for the weather tile. Time-based (frame-rate independent), layered for depth:
- * rain with wind, splashes and lightning; soft drifting snow; sun glow with rays and flare;
- * night stars and moon; volumetric clouds and fog banks built from soft pre-rendered puffs.
+ * Animated sky for the weather tile, in the calm, layered style of modern phone weather apps:
+ * a graded sky per condition and time of day, soft blurred clouds drifting at three depths,
+ * a sun with bloom and faint rays, a moon with stars, fine rain with depth and drops sliding
+ * on the glass, bokeh snow, drifting fog, and lightning that lights the clouds from inside.
+ * Time-based, so it runs at the same speed at any frame rate.
  */
 class WeatherFx {
     private enum class Kind { CLEAR, PARTLY, CLOUDY, FOG, DRIZZLE, RAIN, HEAVY, SNOW, STORM }
 
-    private class Drop(var x: Float, var y: Float, val z: Float)
-    private class Flake(var x: Float, var y: Float, val z: Float, val ph: Float, val sway: Float)
+    private class Cloud(val bmp: Bitmap, var x: Float, val y: Float, val speed: Float, val alpha: Int, val scale: Float)
+    private class Streak(var x: Float, var y: Float, val z: Float, val len: Float)
+    private class Bead(var x: Float, var y: Float, var r: Float, var vy: Float, var hold: Float)
+    private class Flake(var x: Float, var y: Float, val z: Float, val ph: Float)
     private class Star(val x: Float, val y: Float, val r: Float, val ph: Float, val sp: Float)
-    private class Splash(val x: Float, val y: Float, val z: Float, var age: Float)
-    private class Cloud(val bmp: Bitmap, var x: Float, val y: Float, val speed: Float, val alpha: Int)
 
     private var w = 0f
     private var h = 0f
     private var kind: Kind? = null
     private var day = true
-    private val rnd = Random(1234)
+    private var photo = false
+    private val rnd = Random(7)
     private var t = 0f
     private var last = 0L
 
-    private var drops = emptyList<Drop>()
+    private var sky: Shader? = null
+    private var clouds = emptyList<Cloud>()
+    private var fog = emptyList<Cloud>()
+    private var streaks = emptyList<Streak>()
+    private val beads = ArrayList<Bead>()
     private var flakes = emptyList<Flake>()
     private var stars = emptyList<Star>()
-    private val splashes = ArrayList<Splash>()
-    private var clouds = emptyList<Cloud>()
-    private var fogs = emptyList<Cloud>()
+    private var bead: Bitmap? = null
+    private var flakeSharp: Bitmap? = null
+    private var flakeSoft: Bitmap? = null
 
+    private var flash = 0f
+    private var flashX = 0f
+    private var nextFlash = 3f
     private var bolt: Path? = null
     private var boltLife = 0f
-    private var flash = 0f
-    private var nextBolt = 2.5f
     private var meteor = -1f
     private var meteorX = 0f
     private var meteorY = 0f
 
     private val p = Paint(Paint.ANTI_ALIAS_FLAG)
     private val bp = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-    private var dot: Bitmap? = null
-    private val wind = -0.22f
+    private val trail = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeCap = Paint.Cap.ROUND }
+    private val rect = RectF()
+    private val ray = Path()
 
     private fun kindOf(code: Int): Kind = when {
         code <= 1 -> Kind.CLEAR
@@ -75,386 +82,437 @@ class WeatherFx {
         else -> Kind.CLOUDY
     }
 
-    fun draw(cv: Canvas, width: Float, height: Float, code: Int, isDay: Boolean) {
+    /** Draws one frame. [photoBehind]: a city photo is already on the canvas, tint it instead of covering it. */
+    fun draw(cv: Canvas, width: Float, height: Float, code: Int, isDay: Boolean, photoBehind: Boolean = false) {
         val now = System.nanoTime()
         val dt = if (last == 0L) 0.016f else min(0.05f, (now - last) / 1e9f)
         last = now
         t += dt
         val k = kindOf(code)
-        if (width != w || height != h || k != kind || isDay != day) setup(width, height, k, isDay)
-        mood(cv)
-        when (k) {
-            Kind.CLEAR -> if (day) sun(cv, 1f) else night(cv, dt)
-            Kind.PARTLY -> {
-                if (day) sun(cv, 0.7f) else night(cv, dt)
-                clouds(cv, dt)
-            }
-            Kind.CLOUDY -> clouds(cv, dt)
-            Kind.FOG -> fog(cv, dt)
-            Kind.DRIZZLE, Kind.RAIN, Kind.HEAVY -> {
-                clouds(cv, dt)
-                rain(cv, dt)
-            }
-            Kind.STORM -> {
-                clouds(cv, dt)
-                rain(cv, dt)
-                lightning(cv, dt)
-            }
-            Kind.SNOW -> {
-                clouds(cv, dt)
-                snow(cv, dt)
-            }
+        if (width != w || height != h || k != kind || isDay != day || photoBehind != photo) setup(width, height, k, isDay, photoBehind)
+
+        skyLayer(cv)
+        when {
+            k == Kind.CLEAR || k == Kind.PARTLY -> if (day) sun(cv, if (k == Kind.CLEAR) 1f else 0.7f) else night(cv, dt, 1f)
+            k == Kind.SNOW && !day -> night(cv, dt, 0.4f)
         }
+        if (k == Kind.STORM) lightning(cv, dt, before = true)
+        drawClouds(cv, clouds, dt)
+        if (k == Kind.FOG) drawClouds(cv, fog, dt)
+        when (k) {
+            Kind.DRIZZLE, Kind.RAIN, Kind.HEAVY, Kind.STORM -> { rain(cv, dt); glass(cv, dt) }
+            Kind.SNOW -> snow(cv, dt)
+            else -> {}
+        }
+        if (k == Kind.STORM) lightning(cv, dt, before = false)
+        // Bottom shade keeps the temperature and city readable on any sky.
+        p.shader = LinearGradient(0f, h * 0.45f, 0f, h, 0, 0x55000000, Shader.TileMode.CLAMP)
+        cv.drawRect(0f, h * 0.45f, w, h, p)
+        p.shader = null
     }
 
     // ---- setup -------------------------------------------------------------------------------
 
-    private fun setup(width: Float, height: Float, k: Kind, isDay: Boolean) {
+    private fun palette(k: Kind, d: Boolean): IntArray = when (k) {
+        Kind.CLEAR -> if (d) intArrayOf(0xFF2A78D6.toInt(), 0xFF5DA5EC.toInt(), 0xFFA9D4F7.toInt()) else intArrayOf(0xFF070F24.toInt(), 0xFF12244A.toInt(), 0xFF2A4677.toInt())
+        Kind.PARTLY -> if (d) intArrayOf(0xFF3D82CC.toInt(), 0xFF72A9DD.toInt(), 0xFFB7D3EC.toInt()) else intArrayOf(0xFF0C1630.toInt(), 0xFF1A2B4E.toInt(), 0xFF34486D.toInt())
+        Kind.CLOUDY -> if (d) intArrayOf(0xFF5F7489.toInt(), 0xFF8899AA.toInt(), 0xFFB9C5D0.toInt()) else intArrayOf(0xFF141A24.toInt(), 0xFF252E3B.toInt(), 0xFF3C4757.toInt())
+        Kind.FOG -> if (d) intArrayOf(0xFF7F8A94.toInt(), 0xFFA3ACB4.toInt(), 0xFFCCD2D7.toInt()) else intArrayOf(0xFF22272E.toInt(), 0xFF353B44.toInt(), 0xFF4F5661.toInt())
+        Kind.DRIZZLE, Kind.RAIN -> if (d) intArrayOf(0xFF3F4E5E.toInt(), 0xFF5C6C7C.toInt(), 0xFF8494A3.toInt()) else intArrayOf(0xFF0F151D.toInt(), 0xFF1C2530.toInt(), 0xFF323E4C.toInt())
+        Kind.HEAVY -> if (d) intArrayOf(0xFF2F3A46.toInt(), 0xFF46525F.toInt(), 0xFF67737F.toInt()) else intArrayOf(0xFF0A0E14.toInt(), 0xFF161C24.toInt(), 0xFF29313B.toInt())
+        Kind.SNOW -> if (d) intArrayOf(0xFF7D95AE.toInt(), 0xFFA9BCCE.toInt(), 0xFFE0E8EF.toInt()) else intArrayOf(0xFF1B2538.toInt(), 0xFF314058.toInt(), 0xFF5A6981.toInt())
+        Kind.STORM -> if (d) intArrayOf(0xFF1E2530.toInt(), 0xFF323B48.toInt(), 0xFF4E5764.toInt()) else intArrayOf(0xFF080A10.toInt(), 0xFF12161E.toInt(), 0xFF232832.toInt())
+    }
+
+    private fun setup(width: Float, height: Float, k: Kind, isDay: Boolean, photoBehind: Boolean) {
         w = width
         h = height
         kind = k
         day = isDay
-        splashes.clear()
-        bolt = null
-        flash = 0f
-        if (dot == null) dot = softDot()
-        val area = w * h / (300.dpf * 150.dpf)
-        drops = if (k == Kind.DRIZZLE || k == Kind.RAIN || k == Kind.HEAVY || k == Kind.STORM) {
-            val n = ((when (k) { Kind.DRIZZLE -> 45; Kind.RAIN -> 110; else -> 190 }) * area).toInt().coerceIn(20, 400)
-            List(n) { Drop(rnd.nextFloat() * w * 1.3f, rnd.nextFloat() * h, rnd.nextFloat()) }
-        } else emptyList()
-        flakes = if (k == Kind.SNOW) {
-            List((90 * area).toInt().coerceIn(25, 220)) {
-                Flake(rnd.nextFloat() * w, rnd.nextFloat() * h, rnd.nextFloat(), rnd.nextFloat() * 6.28f, (3 + rnd.nextFloat() * 9).dpf)
-            }
-        } else emptyList()
-        stars = if (!isDay && (k == Kind.CLEAR || k == Kind.PARTLY)) {
-            List((60 * area).toInt().coerceIn(20, 140)) {
-                Star(rnd.nextFloat() * w, rnd.nextFloat() * h * 0.8f, (0.5f + rnd.nextFloat() * 1.2f).dpf, rnd.nextFloat() * 6.28f, 0.6f + rnd.nextFloat() * 2.2f)
-            }
-        } else emptyList()
+        photo = photoBehind
+        sky = LinearGradient(0f, 0f, 0f, h, palette(k, isDay), floatArrayOf(0f, 0.55f, 1f), Shader.TileMode.CLAMP)
         clouds = buildClouds(k)
-        fogs = if (k == Kind.FOG) List(4) { i ->
-            val bw = (w * 1.6f).toInt().coerceAtLeast(8)
-            val bh = (h * 0.42f).toInt().coerceAtLeast(8)
-            Cloud(puffs(bw, bh, 26, 0.55f), -rnd.nextFloat() * w * 0.6f, h * (0.05f + i * 0.24f), (5 + i * 3).dpf, 120 + i * 25)
+        fog = if (k == Kind.FOG) buildFog() else emptyList()
+        val rainy = k == Kind.DRIZZLE || k == Kind.RAIN || k == Kind.HEAVY || k == Kind.STORM
+        val n = when (k) { Kind.DRIZZLE -> 45; Kind.RAIN -> 90; Kind.HEAVY, Kind.STORM -> 150; else -> 0 }
+        streaks = List(n) {
+            val z = 0.25f + rnd.nextFloat() * 0.75f
+            Streak(rnd.nextFloat() * w, rnd.nextFloat() * h, z, (8f + 26f * z * z).dpf)
+        }
+        beads.clear()
+        if (rainy) {
+            bead = bead ?: beadBitmap()
+            repeat(if (k == Kind.DRIZZLE) 6 else 11) { beads += newBead(true) }
+        }
+        flakes = if (k == Kind.SNOW) List(70) { Flake(rnd.nextFloat() * w, rnd.nextFloat() * h, 0.2f + rnd.nextFloat() * 0.8f, rnd.nextFloat() * 6.28f) } else emptyList()
+        if (k == Kind.SNOW) {
+            flakeSharp = flakeSharp ?: disc(10.dp, 0f)
+            flakeSoft = flakeSoft ?: disc(28.dp, 7.dpf)
+        }
+        stars = if (!isDay) List(46) {
+            Star(rnd.nextFloat() * w, rnd.nextFloat() * h * 0.7f, (0.5f + rnd.nextFloat() * 1.1f).dpf, rnd.nextFloat() * 6.28f, 0.6f + rnd.nextFloat() * 1.6f)
         } else emptyList()
     }
 
-    private fun buildClouds(k: Kind): List<Cloud> {
-        val n = when (k) {
-            Kind.CLEAR -> 0
-            Kind.PARTLY -> 3
-            Kind.CLOUDY -> 6
-            Kind.DRIZZLE, Kind.SNOW -> 5
-            else -> 7
-        }
-        return List(n) { i ->
-            val near = i % 2 == 1
-            val cw = (w * (0.55f + rnd.nextFloat() * 0.35f) * if (near) 1f else 0.75f).toInt().coerceAtLeast(8)
-            val ch = (cw * (0.42f + rnd.nextFloat() * 0.12f)).toInt().coerceAtLeast(8)
-            val top = if (k == Kind.PARTLY) h * (0.05f + rnd.nextFloat() * 0.45f) else -ch * 0.35f + rnd.nextFloat() * h * 0.45f
-            Cloud(
-                puffs(cw, ch, 24, 1f),
-                rnd.nextFloat() * (w + cw) - cw, top,
-                (if (near) 9f else 4f + rnd.nextFloat() * 2).dpf,
-                if (near) 215 else 140,
-            )
-        }
-    }
-
-    /** Soft white blob made of overlapping radial gradients; tinted at draw time. */
-    private fun puffs(bw: Int, bh: Int, count: Int, density: Float): Bitmap {
+    /**
+     * One cumulus, rendered at half size: a soft row of small lobes for the base, bigger
+     * lobes billowing on top, blurred together; lit from above and shaded underneath.
+     */
+    private fun cloudBitmap(cw: Int, ch: Int, lit: Int, shade: Int, seed: Int): Bitmap {
+        val r = Random(seed)
+        val bw = (cw / 2).coerceAtLeast(8)
+        val bh = (ch / 2).coerceAtLeast(8)
         val b = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
         val c = Canvas(b)
-        val pp = Paint(Paint.ANTI_ALIAS_FLAG)
-        for (i in 0 until count) {
-            val fx = 0.12f + rnd.nextFloat() * 0.76f
-            // Higher puffs in the middle give the classic cumulus silhouette.
-            val hump = sin(fx * PI.toFloat())
-            val r = bh * (0.22f + rnd.nextFloat() * 0.22f) * (0.7f + hump * 0.5f)
-            val cx = fx * bw
-            val cy = min(bh * (0.72f - hump * 0.28f + (rnd.nextFloat() - 0.5f) * 0.12f), bh - r)
-            val a = (255 * density * (0.55f + rnd.nextFloat() * 0.45f)).toInt().coerceIn(0, 255)
-            // Dense core with a short soft rim: reads as a volume, not a blur.
-            pp.shader = RadialGradient(cx, cy, r, intArrayOf(Color.argb(a, 255, 255, 255), Color.argb(a * 9 / 10, 255, 255, 255), Color.argb(a / 3, 255, 255, 255), 0), floatArrayOf(0f, 0.62f, 0.85f, 1f), Shader.TileMode.CLAMP)
-            c.drawCircle(cx, cy, r, pp)
+        val lp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; maskFilter = BlurMaskFilter(bh * 0.07f, BlurMaskFilter.Blur.NORMAL) }
+        val base = bh * 0.8f
+        val baseN = 6
+        for (i in 0 until baseN) {
+            val f = i / (baseN - 1f)
+            val rad = bh * (0.13f + 0.04f * r.nextFloat())
+            c.drawCircle(bw * (0.14f + 0.72f * f), base - rad * 0.9f, rad, lp)
         }
-        // Darker underside.
-        pp.shader = LinearGradient(0f, bh * 0.45f, 0f, bh.toFloat(), 0, 0x55000000, Shader.TileMode.CLAMP)
-        pp.xfermode = android.graphics.PorterDuffXfermode(PorterDuff.Mode.SRC_ATOP)
-        c.drawRect(0f, 0f, bw.toFloat(), bh.toFloat(), pp)
+        val tops = 3 + r.nextInt(3)
+        for (i in 0 until tops) {
+            val f = (i + 0.5f) / tops
+            val bump = sin(f * PI).toFloat()
+            // Sized to stay inside the bitmap (plus blur), so no lobe gets a flat top.
+            val rad = bh * (0.14f + 0.13f * bump) * (0.88f + 0.24f * r.nextFloat())
+            val cx = bw * (0.2f + 0.6f * f) + (r.nextFloat() - 0.5f) * bw * 0.08f
+            c.drawCircle(cx, base - bh * 0.12f - rad * 0.6f, rad, lp)
+        }
+        // Light from above, shadow under the belly; only inside the silhouette.
+        val sp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = LinearGradient(0f, bh * 0.15f, 0f, base, lit, shade, Shader.TileMode.CLAMP)
+            xfermode = PorterDuffXfermode(PorterDuff.Mode.SRC_ATOP)
+        }
+        c.drawRect(0f, 0f, bw.toFloat(), bh.toFloat(), sp)
+        sp.shader = RadialGradient(bw * 0.38f, bh * 0.25f, bh * 0.45f, 0x55FFFFFF, 0, Shader.TileMode.CLAMP)
+        c.drawRect(0f, 0f, bw.toFloat(), bh.toFloat(), sp)
+        // Soften the underside so it melts into the sky.
+        val fade = Paint().apply {
+            shader = LinearGradient(0f, base - bh * 0.18f, 0f, base + bh * 0.05f, Color.BLACK, 0x66000000, Shader.TileMode.CLAMP)
+            xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
+        }
+        c.drawRect(0f, 0f, bw.toFloat(), bh.toFloat(), fade)
         return b
     }
 
-    private fun softDot(): Bitmap {
-        val s = 48
+    private fun buildClouds(k: Kind): List<Cloud> {
+        data class Spec(val count: Int, val lit: Int, val shade: Int)
+        val night = !day
+        val s = when (k) {
+            Kind.CLEAR -> Spec(1, 0xF2FFFFFF.toInt(), 0xCCE6EEF6.toInt())
+            Kind.PARTLY -> Spec(3, if (night) 0xFF8D9AB0.toInt() else 0xFFFFFFFF.toInt(), if (night) 0xFF4A5670.toInt() else 0xFFD3DEEA.toInt())
+            Kind.CLOUDY -> Spec(6, if (night) 0xFF6B7584.toInt() else 0xFFF1F4F7.toInt(), if (night) 0xFF323A46.toInt() else 0xFFA9B5C1.toInt())
+            Kind.SNOW -> Spec(4, if (night) 0xFF9AA8BC.toInt() else 0xFFF8FAFC.toInt(), if (night) 0xFF56637A.toInt() else 0xFFC4D0DC.toInt())
+            Kind.DRIZZLE, Kind.RAIN -> Spec(6, if (night) 0xFF4E5866.toInt() else 0xFFB5BFC9.toInt(), if (night) 0xFF20262F.toInt() else 0xFF65717E.toInt())
+            Kind.HEAVY -> Spec(7, if (night) 0xFF3E4651.toInt() else 0xFF96A0AA.toInt(), if (night) 0xFF181C22.toInt() else 0xFF4C5662.toInt())
+            Kind.STORM -> Spec(7, if (night) 0xFF353B45.toInt() else 0xFF7C858F.toInt(), if (night) 0xFF0E1015.toInt() else 0xFF323942.toInt())
+            Kind.FOG -> Spec(0, 0, 0)
+        }
+        if (s.count == 0) return emptyList()
+        val out = ArrayList<Cloud>()
+        // Three depths: far clouds small, faint and slow; near ones big, solid and faster.
+        for (i in 0 until s.count) {
+            val depth = i % 3
+            val scale = floatArrayOf(0.62f, 0.85f, 1.1f)[depth]
+            val cw = (w * 0.75f * scale).toInt()
+            val ch = (h * 0.55f * scale).toInt()
+            val bmp = cloudBitmap(cw, ch, s.lit, s.shade, 31 * i + k.ordinal)
+            val y = when (k) {
+                Kind.CLEAR, Kind.PARTLY -> h * (0.05f + 0.22f * rnd.nextFloat())
+                else -> -ch * 0.25f + h * 0.32f * rnd.nextFloat()
+            }
+            val speed = floatArrayOf(3f, 6f, 10f)[depth].dpf * (if (k == Kind.STORM) 1.8f else 1f)
+            val alpha = when (depth) { 0 -> 150; 1 -> 205; else -> 240 } * (if (k == Kind.CLEAR) 0.55f else 1f)
+            out += Cloud(bmp, rnd.nextFloat() * (w + cw) - cw * 0.5f, y, speed, alpha.toInt(), 1f)
+        }
+        return out.sortedBy { it.alpha }
+    }
+
+    private fun buildFog(): List<Cloud> = List(5) { i ->
+        val bw = (w * 0.8f).toInt().coerceAtLeast(8)
+        val bh = (h * 0.22f).toInt().coerceAtLeast(8)
+        val b = Bitmap.createBitmap(bw, bh, Bitmap.Config.ARGB_8888)
+        val c = Canvas(b)
+        val fp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE; maskFilter = BlurMaskFilter(bh * 0.3f, BlurMaskFilter.Blur.NORMAL) }
+        c.drawOval(RectF(bw * 0.05f, bh * 0.3f, bw * 0.95f, bh * 0.7f), fp)
+        // Scale 2 marks a fog band: drawn at full size, not doubled like the half-size clouds.
+        Cloud(b, rnd.nextFloat() * w * 1.5f - w * 0.25f, h * (0.15f + 0.17f * i), (4f + 3f * i).dpf, 70 + 22 * (i % 3), 2f)
+    }
+
+    private fun beadBitmap(): Bitmap {
+        val s = 24.dp
         val b = Bitmap.createBitmap(s, s, Bitmap.Config.ARGB_8888)
-        val pp = Paint(Paint.ANTI_ALIAS_FLAG)
-        pp.shader = RadialGradient(s / 2f, s / 2f, s / 2f, intArrayOf(Color.WHITE, 0xAAFFFFFF.toInt(), 0), floatArrayOf(0f, 0.4f, 1f), Shader.TileMode.CLAMP)
-        Canvas(b).drawCircle(s / 2f, s / 2f, s / 2f, pp)
+        val c = Canvas(b)
+        val r = s / 2f - 1
+        val dp = Paint(Paint.ANTI_ALIAS_FLAG)
+        // Water lens: darker rim at the bottom, bright crescent on top, sparkle top-left.
+        dp.shader = RadialGradient(r, r * 0.8f, r * 1.1f, intArrayOf(0x22FFFFFF, 0x33FFFFFF, 0x66101820), floatArrayOf(0f, 0.7f, 1f), Shader.TileMode.CLAMP)
+        c.drawCircle(r + 1, r + 1, r, dp)
+        dp.shader = LinearGradient(0f, 0f, 0f, s * 0.5f, 0x88FFFFFF.toInt(), 0, Shader.TileMode.CLAMP)
+        c.drawOval(RectF(s * 0.22f, s * 0.1f, s * 0.78f, s * 0.42f), dp)
+        dp.shader = null
+        dp.color = 0xDDFFFFFF.toInt()
+        c.drawCircle(s * 0.36f, s * 0.3f, s * 0.07f, dp)
+        return b
+    }
+
+    private fun newBead(anywhere: Boolean) = Bead(
+        rnd.nextFloat() * w,
+        if (anywhere) rnd.nextFloat() * h else -10f,
+        (2.5f + rnd.nextFloat() * 4.5f).dpf,
+        0f,
+        1f + rnd.nextFloat() * 6f,
+    )
+
+    private fun disc(size: Int, blur: Float): Bitmap {
+        val b = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = Canvas(b)
+        val dp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            if (blur > 0) maskFilter = BlurMaskFilter(blur, BlurMaskFilter.Blur.NORMAL)
+        }
+        c.drawCircle(size / 2f, size / 2f, size / 2f - blur - 1, dp)
         return b
     }
 
     // ---- layers ------------------------------------------------------------------------------
 
-    private fun mood(cv: Canvas) {
-        val k = kind ?: return
-        val (top, bottom) = when {
-            !day -> 0x9908122E.toInt() to 0x55000814
-            k == Kind.CLEAR -> 0x2A3B8FD8 to 0x00000000
-            k == Kind.PARTLY -> 0x22406A90 to 0x00000000
-            k == Kind.STORM -> 0x99101622.toInt() to 0x66000000
-            k == Kind.HEAVY || k == Kind.RAIN -> 0x7724303C to 0x44000000
-            k == Kind.FOG -> 0x55B8C0C8 to 0x77D8DDE2
-            k == Kind.SNOW -> 0x5590A0B4 to 0x33FFFFFF
-            else -> 0x5540464E to 0x22000000
-        }
-        p.shader = LinearGradient(0f, 0f, 0f, h, top, bottom, Shader.TileMode.CLAMP)
+    private fun skyLayer(cv: Canvas) {
+        p.shader = sky
+        // Over a city photo the sky only tints it, so the place stays recognisable.
+        p.alpha = if (photo) 95 else 255
         cv.drawRect(0f, 0f, w, h, p)
+        p.alpha = 255
         p.shader = null
     }
 
     private fun sun(cv: Canvas, strength: Float) {
-        val sx = w * 0.82f
-        val sy = h * 0.2f
-        val m = max(w, h)
-        val pulse = 1f + 0.04f * sin(t * 1.3f)
-        p.shader = RadialGradient(sx, sy, m * 0.75f * pulse, intArrayOf(Color.argb((110 * strength).toInt(), 255, 236, 180), Color.argb((40 * strength).toInt(), 255, 220, 150), 0), floatArrayOf(0f, 0.35f, 1f), Shader.TileMode.CLAMP)
-        cv.drawRect(0f, 0f, w, h, p)
-        // Light shafts: thin wedges with a radial falloff, slowly turning and breathing.
-        val path = Path()
-        p.shader = RadialGradient(sx, sy, m * 0.95f, intArrayOf(Color.argb((70 * strength).toInt(), 255, 248, 220), 0), null, Shader.TileMode.CLAMP)
-        for (i in 0 until 9) {
-            val a = t * 0.05f + i * (2 * PI.toFloat() / 9) + sin(i * 1.7f) * 0.2f
-            val spread = 0.035f + 0.02f * sin(t * 0.6f + i * 2.1f)
-            val len = m * (0.75f + 0.2f * sin(t * 0.4f + i))
-            path.reset()
-            path.moveTo(sx, sy)
-            path.lineTo(sx + cos(a - spread) * len, sy + sin(a - spread) * len)
-            path.lineTo(sx + cos(a + spread) * len, sy + sin(a + spread) * len)
-            path.close()
-            cv.drawPath(path, p)
+        val cx = w * 0.8f
+        val cy = h * 0.2f
+        val breathe = 1f + 0.04f * sin(t * 1.1f)
+        val halo = h * 1.1f * breathe
+        p.shader = RadialGradient(
+            cx, cy, halo,
+            intArrayOf(((0x70 * strength).toInt() shl 24) or 0xFFF4D6, ((0x22 * strength).toInt() shl 24) or 0xFFE9B8, 0),
+            floatArrayOf(0f, 0.35f, 1f), Shader.TileMode.CLAMP,
+        )
+        cv.drawCircle(cx, cy, halo, p)
+        // Faint rays turning very slowly.
+        cv.save()
+        cv.rotate(t * 2.2f, cx, cy)
+        for (i in 0 until 7) {
+            val a = (i / 7f) * 2 * PI.toFloat()
+            val len = h * (0.9f + 0.25f * sin(t * 0.7f + i))
+            val wa = 0.07f
+            ray.reset()
+            ray.moveTo(cx, cy)
+            ray.lineTo(cx + cos(a - wa) * len, cy + sin(a - wa) * len)
+            ray.lineTo(cx + cos(a + wa) * len, cy + sin(a + wa) * len)
+            ray.close()
+            p.shader = RadialGradient(cx, cy, len, ((0x26 * strength).toInt() shl 24) or 0xFFFFFF, 0, Shader.TileMode.CLAMP)
+            cv.drawPath(ray, p)
         }
-        val core = min(w, h) * 0.11f
-        p.shader = RadialGradient(sx, sy, core * 2.2f, intArrayOf(Color.argb((255 * strength).toInt(), 255, 253, 240), Color.argb((200 * strength).toInt(), 255, 240, 190), 0), floatArrayOf(0f, 0.35f, 1f), Shader.TileMode.CLAMP)
-        cv.drawCircle(sx, sy, core * 2.2f, p)
+        cv.restore()
+        val core = h * 0.12f
+        p.shader = RadialGradient(cx, cy, core * 1.6f, intArrayOf(Color.WHITE, 0xFFFFF6DC.toInt(), 0x00FFF0C0), floatArrayOf(0f, 0.55f, 1f), Shader.TileMode.CLAMP)
+        cv.drawCircle(cx, cy, core * 1.6f, p)
         p.shader = null
-        // Lens flare along the line from the sun through the tile centre.
-        val dx = w / 2 - sx
-        val dy = h / 2 - sy
-        val flares = floatArrayOf(0.55f, 0.9f, 1.25f, 1.6f)
-        val sizes = floatArrayOf(0.05f, 0.11f, 0.035f, 0.08f)
-        val cols = intArrayOf(0x22FFFFFF, 0x1A8FD3FF, 0x26FFD7A0, 0x149CFFC8)
-        for (i in flares.indices) {
-            val fx = sx + dx * flares[i]
-            val fy = sy + dy * flares[i]
-            val r = min(w, h) * sizes[i]
-            val a = (Color.alpha(cols[i]) * strength * (0.8f + 0.2f * sin(t + i))).toInt()
-            p.shader = RadialGradient(fx, fy, r, intArrayOf(Color.argb(a, Color.red(cols[i]), Color.green(cols[i]), Color.blue(cols[i])), Color.argb(a, Color.red(cols[i]), Color.green(cols[i]), Color.blue(cols[i])), 0), floatArrayOf(0f, 0.7f, 1f), Shader.TileMode.CLAMP)
-            cv.drawCircle(fx, fy, r, p)
+        // Lens flare along the diagonal.
+        for ((f, r, a) in listOf(Triple(0.35f, 0.05f, 0x22), Triple(0.6f, 0.025f, 0x30), Triple(0.85f, 0.08f, 0x14))) {
+            p.color = ((a * strength).toInt() shl 24) or 0xFFFFFF
+            cv.drawCircle(cx + (w * 0.2f - cx) * f, cy + (h * 0.85f - cy) * f, h * r, p)
         }
-        p.shader = null
     }
 
-    private fun night(cv: Canvas, dt: Float) {
-        p.shader = null
+    private fun night(cv: Canvas, dt: Float, amount: Float) {
         for (s in stars) {
-            val a = 0.25f + 0.75f * (0.5f + 0.5f * sin(t * s.sp + s.ph))
-            p.color = Color.argb((a * 230).toInt(), 235, 240, 255)
+            val a = (0.35f + 0.65f * (0.5f + 0.5f * sin(t * s.sp + s.ph))) * amount
+            p.color = ((a * 220).toInt() shl 24) or 0xFFFFFF
             cv.drawCircle(s.x, s.y, s.r, p)
         }
-        val mx = w * 0.8f
-        val my = h * 0.24f
-        val r = min(w, h) * 0.09f
-        p.shader = RadialGradient(mx, my, r * 4f, intArrayOf(0x55C8D8FF, 0x18A0B8FF, 0), floatArrayOf(0f, 0.4f, 1f), Shader.TileMode.CLAMP)
-        cv.drawCircle(mx, my, r * 4f, p)
-        p.shader = RadialGradient(mx - r * 0.3f, my - r * 0.3f, r * 1.3f, 0xFFFFFDF2.toInt(), 0xFFD9DCE6.toInt(), Shader.TileMode.CLAMP)
-        val moon = Path().apply { addCircle(mx, my, r, Path.Direction.CW) }
-        val bite = Path().apply { addCircle(mx + r * 0.55f, my - r * 0.25f, r * 0.95f, Path.Direction.CW) }
-        moon.op(bite, Path.Op.DIFFERENCE)
-        cv.drawPath(moon, p)
+        val cx = w * 0.8f
+        val cy = h * 0.24f
+        val r = h * 0.1f
+        p.shader = RadialGradient(cx, cy, r * 5, intArrayOf(((0x40 * amount).toInt() shl 24) or 0xD8E4FF, 0), null, Shader.TileMode.CLAMP)
+        cv.drawCircle(cx, cy, r * 5, p)
         p.shader = null
-        // Occasional shooting star.
-        if (meteor < 0f && rnd.nextFloat() < dt / 9f) {
+        val moon = Path().apply { addCircle(cx, cy, r, Path.Direction.CW) }
+        val bite = Path().apply { addCircle(cx - r * 0.42f, cy - r * 0.22f, r * 0.9f, Path.Direction.CW) }
+        moon.op(bite, Path.Op.DIFFERENCE)
+        p.color = ((amount * 255).toInt() shl 24) or 0xF5F1E4
+        cv.drawPath(moon, p)
+        if (amount < 1f) return
+        // Now and then a shooting star.
+        if (meteor < 0f && rnd.nextFloat() < dt / 14f) {
             meteor = 0f
-            meteorX = w * (0.1f + rnd.nextFloat() * 0.5f)
-            meteorY = h * rnd.nextFloat() * 0.3f
+            meteorX = w * (0.25f + 0.5f * rnd.nextFloat())
+            meteorY = h * 0.08f
         }
         if (meteor >= 0f) {
-            meteor += dt
-            val life = 0.7f
-            val k = meteor / life
-            val hx = meteorX + k * w * 0.5f
-            val hy = meteorY + k * h * 0.35f
-            val a = (sin(k * PI.toFloat()) * 220).toInt().coerceAtLeast(0)
-            p.shader = LinearGradient(hx, hy, hx - w * 0.15f, hy - h * 0.1f, Color.argb(a, 255, 255, 255), 0, Shader.TileMode.CLAMP)
+            meteor += dt / 0.8f
+            val k = meteor
+            val x = meteorX - k * w * 0.35f
+            val y = meteorY + k * h * 0.35f
+            p.shader = LinearGradient(x, y, x + w * 0.12f, y - h * 0.12f, 0xCCFFFFFF.toInt(), 0, Shader.TileMode.CLAMP)
             p.strokeWidth = 1.5f.dpf
-            p.strokeCap = Paint.Cap.ROUND
-            cv.drawLine(hx, hy, hx - w * 0.15f, hy - h * 0.1f, p)
+            p.style = Paint.Style.STROKE
+            p.alpha = ((1f - k) * 255).toInt().coerceIn(0, 255)
+            cv.drawLine(x, y, x + w * 0.12f, y - h * 0.12f, p)
+            p.style = Paint.Style.FILL
             p.shader = null
-            if (meteor > life) meteor = -1f
+            p.alpha = 255
+            if (meteor >= 1f) meteor = -1f
         }
     }
 
-    private fun clouds(cv: Canvas, dt: Float) {
-        val k = kind ?: return
-        val tint = when {
-            k == Kind.STORM -> 0xFF5D6570.toInt()
-            k == Kind.HEAVY || k == Kind.RAIN -> 0xFF8A939E.toInt()
-            !day -> 0xFF8C98AE.toInt()
-            k == Kind.CLOUDY || k == Kind.DRIZZLE -> 0xFFC9CED4.toInt()
-            else -> Color.WHITE
-        }
-        bp.colorFilter = PorterDuffColorFilter(tint, PorterDuff.Mode.MULTIPLY)
-        for (c in clouds) {
+    private fun drawClouds(cv: Canvas, list: List<Cloud>, dt: Float) {
+        for (c in list) {
+            val band = c.scale > 1.5f
+            val dw = c.bmp.width * (if (band) 1.8f else 2f)
+            val dh = c.bmp.height * (if (band) 1f else 2f)
             c.x += c.speed * dt
-            if (c.x > w) c.x = -c.bmp.width.toFloat() - rnd.nextFloat() * w * 0.3f
-            bp.alpha = c.alpha
-            cv.drawBitmap(c.bmp, c.x, c.y, bp)
+            if (c.x > w + 4) c.x = -dw
+            // Over the city photo clouds are a veil, not a wall.
+            val base = if (photo) c.alpha * 9 / 20 else c.alpha
+            bp.alpha = if (flash > 0f) min(255, base + (flash * 60).toInt()) else base
+            rect.set(c.x, c.y, c.x + dw, c.y + dh)
+            cv.drawBitmap(c.bmp, null, rect, bp)
         }
-        bp.colorFilter = null
-        bp.alpha = 255
-    }
-
-    private fun fog(cv: Canvas, dt: Float) {
-        bp.colorFilter = PorterDuffColorFilter(0xFFE6E9EC.toInt(), PorterDuff.Mode.MULTIPLY)
-        for (f in fogs) {
-            f.x += f.speed * dt
-            if (f.x > w * 0.2f) f.x = -f.bmp.width + w * 0.8f
-            bp.alpha = f.alpha
-            cv.drawBitmap(f.bmp, f.x, f.y, bp)
-        }
-        bp.colorFilter = null
         bp.alpha = 255
     }
 
     private fun rain(cv: Canvas, dt: Float) {
-        val k = kind ?: return
-        val heavy = k == Kind.HEAVY || k == Kind.STORM
-        val drizzle = k == Kind.DRIZZLE
-        val nx = wind / sqrt(1 + wind * wind)
-        val ny = 1 / sqrt(1 + wind * wind)
-        p.shader = null
+        val heavy = kind == Kind.HEAVY || kind == Kind.STORM
+        val slant = 0.16f
+        p.style = Paint.Style.STROKE
         p.strokeCap = Paint.Cap.ROUND
-        for (d in drops) {
-            val v = (if (drizzle) 260f else 420f + 380f * d.z).dpf * (if (heavy) 1.25f else 1f)
-            d.y += v * ny * dt
-            d.x += v * nx * dt
-            val len = (if (drizzle) 4f + 6f * d.z else 9f + 22f * d.z).dpf * (if (heavy) 1.2f else 1f)
-            if (d.y - len > h) {
-                if (d.z > 0.55f && rnd.nextFloat() < 0.6f) splashes += Splash(d.x, h - rnd.nextFloat() * h * 0.06f, d.z, 0f)
+        for (d in streaks) {
+            val v = (520f + 700f * d.z).dpf * (if (kind == Kind.DRIZZLE) 0.6f else 1f)
+            d.y += v * dt
+            d.x -= v * slant * dt
+            if (d.y - d.len > h) {
                 d.y = -rnd.nextFloat() * h * 0.3f
-                d.x = rnd.nextFloat() * (w * 1.3f)
+                d.x = rnd.nextFloat() * (w * 1.2f)
             }
-            val a = ((if (drizzle) 50 else 35) + 150 * d.z).toInt()
-            p.strokeWidth = (0.5f + 1.3f * d.z).dpf
-            p.color = Color.argb(a / 2, 210, 225, 240)
-            cv.drawLine(d.x, d.y, d.x - nx * len, d.y - ny * len, p)
-            p.color = Color.argb(a, 235, 242, 250)
-            cv.drawLine(d.x, d.y, d.x - nx * len * 0.35f, d.y - ny * len * 0.35f, p)
-        }
-        // Splashes: an expanding ring plus two droplets thrown up.
-        p.style = Paint.Style.STROKE
-        val it = splashes.iterator()
-        while (it.hasNext()) {
-            val s = it.next()
-            s.age += dt
-            val life = 0.32f
-            if (s.age > life) { it.remove(); continue }
-            val k2 = s.age / life
-            val a = ((1 - k2) * 160 * s.z).toInt()
-            p.color = Color.argb(a, 230, 238, 248)
-            p.strokeWidth = 1.dpf
-            val r = (2 + 7 * k2) * s.z
-            cv.drawOval(s.x - r.dpf, s.y - r.dpf * 0.3f, s.x + r.dpf, s.y + r.dpf * 0.3f, p)
-            val up = sin(k2 * PI.toFloat()) * 6.dpf * s.z
-            p.style = Paint.Style.FILL
-            cv.drawCircle(s.x - k2 * 5.dpf, s.y - up, 0.9f.dpf, p)
-            cv.drawCircle(s.x + k2 * 5.dpf, s.y - up * 0.8f, 0.9f.dpf, p)
-            p.style = Paint.Style.STROKE
+            if (d.x < -20) d.x += w + 40
+            // Near drops are wider and softer, far ones thin and faint: depth of field.
+            p.strokeWidth = (0.6f + 1.6f * d.z).dpf
+            val a = ((if (heavy) 0.32f else 0.26f) * (0.45f + 0.55f * d.z) * 255).toInt()
+            val tx = d.x + d.len * slant
+            val ty = d.y - d.len
+            p.color = ((a / 3) shl 24) or 0xE6F0FF
+            cv.drawLine(tx, ty, (tx + d.x) / 2, (ty + d.y) / 2, p)
+            p.color = (a shl 24) or 0xE6F0FF
+            cv.drawLine((tx + d.x) / 2, (ty + d.y) / 2, d.x, d.y, p)
         }
         p.style = Paint.Style.FILL
-        if (heavy) {
-            // Spray haze near the ground.
-            p.shader = LinearGradient(0f, h * 0.7f, 0f, h, 0, 0x33DDE6EE, Shader.TileMode.CLAMP)
-            cv.drawRect(0f, h * 0.7f, w, h, p)
-            p.shader = null
-        }
+        p.strokeCap = Paint.Cap.BUTT
+        // Mist rising off the ground.
+        p.shader = LinearGradient(0f, h * 0.65f, 0f, h, 0, if (heavy) 0x30E8EEF4 else 0x1EE8EEF4, Shader.TileMode.CLAMP)
+        cv.drawRect(0f, h * 0.65f, w, h, p)
+        p.shader = null
     }
 
-    private fun lightning(cv: Canvas, dt: Float) {
-        if (t > nextBolt) {
-            bolt = makeBolt()
-            boltLife = 0.35f
-            flash = 1f
-            nextBolt = t + 3.5f + rnd.nextFloat() * 6f
-        }
-        if (flash > 0.01f) {
-            // Two-stage flicker, then exponential fade.
-            val f = flash * if (boltLife in 0.18f..0.24f) 0.3f else 1f
-            p.color = Color.argb((f * 150).toInt(), 225, 232, 255)
-            cv.drawRect(0f, 0f, w, h, p)
-            flash *= exp(-dt * 7f)
-        }
-        val b = bolt ?: return
-        boltLife -= dt
-        if (boltLife <= 0f) { bolt = null; return }
-        val a = (min(1f, boltLife / 0.2f) * 255).toInt()
-        p.style = Paint.Style.STROKE
-        p.strokeJoin = Paint.Join.ROUND
-        p.strokeCap = Paint.Cap.ROUND
-        p.color = Color.argb(a / 4, 170, 190, 255)
-        p.strokeWidth = 7.dpf
-        cv.drawPath(b, p)
-        p.color = Color.argb(a / 2, 200, 215, 255)
-        p.strokeWidth = 3.dpf
-        cv.drawPath(b, p)
-        p.color = Color.argb(a, 255, 255, 255)
-        p.strokeWidth = 1.2f.dpf
-        cv.drawPath(b, p)
-        p.style = Paint.Style.FILL
-    }
-
-    private fun makeBolt(): Path {
-        val path = Path()
-        fun seg(x1: Float, y1: Float, x2: Float, y2: Float, disp: Float, depth: Int, branch: Boolean) {
-            if (depth == 0) {
-                path.moveTo(x1, y1)
-                path.lineTo(x2, y2)
-                return
+    /** Drops on the glass: they sit, swell, then slide down and are replaced at the top. */
+    private fun glass(cv: Canvas, dt: Float) {
+        val b = bead ?: return
+        for (i in beads.indices) {
+            val d = beads[i]
+            if (d.hold > 0f) {
+                d.hold -= dt
+                d.r += dt * 0.25f.dpf
+            } else {
+                d.vy = min(d.vy + 260f.dpf * dt, 140f.dpf)
+                d.y += d.vy * dt
+                d.x += sin(d.y * 0.05f) * 0.3f
+                // Faint wet track, fading upwards.
+                trail.strokeWidth = d.r * 0.35f
+                trail.shader = LinearGradient(0f, d.y - d.r * 5, 0f, d.y, 0, 0x18FFFFFF, Shader.TileMode.CLAMP)
+                cv.drawLine(d.x, d.y - d.r * 5, d.x, d.y - d.r, trail)
+                trail.shader = null
             }
-            val mx = (x1 + x2) / 2 + (rnd.nextFloat() - 0.5f) * disp
-            val my = (y1 + y2) / 2 + (rnd.nextFloat() - 0.5f) * disp * 0.3f
-            seg(x1, y1, mx, my, disp / 2, depth - 1, branch)
-            seg(mx, my, x2, y2, disp / 2, depth - 1, branch)
-            if (branch && depth >= 3 && rnd.nextFloat() < 0.35f) {
-                val bx = mx + (rnd.nextFloat() - 0.3f) * w * 0.25f
-                val by = my + h * (0.12f + rnd.nextFloat() * 0.18f)
-                seg(mx, my, bx, by, disp / 2, depth - 2, false)
-            }
+            rect.set(d.x - d.r, d.y - d.r, d.x + d.r, d.y + d.r)
+            bp.alpha = 230
+            cv.drawBitmap(b, null, rect, bp)
+            if (d.y - d.r > h) beads[i] = newBead(false)
         }
-        val x0 = w * (0.25f + rnd.nextFloat() * 0.5f)
-        seg(x0, -4f, x0 + (rnd.nextFloat() - 0.5f) * w * 0.3f, h * (0.75f + rnd.nextFloat() * 0.25f), w * 0.22f, 6, true)
-        return path
+        bp.alpha = 255
     }
 
     private fun snow(cv: Canvas, dt: Float) {
-        val d = dot ?: return
-        val r = RectF()
+        val sharp = flakeSharp ?: return
+        val soft = flakeSoft ?: return
         for (f in flakes) {
-            f.y += (10f + 34f * f.z).dpf * dt
-            if (f.y > h + 6.dpf) {
-                f.y = -6.dpf
-                f.x = rnd.nextFloat() * w
-            }
-            val x = f.x + sin(t * (0.6f + f.z) + f.ph) * f.sway + t * 6.dpf * f.z % w
-            val xx = ((x % w) + w) % w
-            val s = (1.4f + 4.2f * f.z).dpf
-            r.set(xx - s, f.y - s, xx + s, f.y + s)
-            bp.alpha = (90 + 165 * f.z).toInt()
-            cv.drawBitmap(d, null, r, bp)
+            f.y += (14f + 46f * f.z).dpf * dt
+            f.x += sin(t * (0.6f + f.z) + f.ph) * 14f.dpf * dt
+            if (f.y > h + 20) { f.y = -20f; f.x = rnd.nextFloat() * w }
+            // Near flakes: large and out of focus (bokeh); far ones small and crisp.
+            val near = f.z > 0.75f
+            val s = if (near) (10f + 14f * f.z).dpf else (2f + 4f * f.z).dpf
+            bp.alpha = if (near) 120 else (150 + 100 * f.z).toInt()
+            rect.set(f.x - s / 2, f.y - s / 2, f.x + s / 2, f.y + s / 2)
+            cv.drawBitmap(if (near) soft else sharp, null, rect, bp)
         }
         bp.alpha = 255
+    }
+
+    /** [before]: glow behind the clouds; after: the bolt and the flash over everything. */
+    private fun lightning(cv: Canvas, dt: Float, before: Boolean) {
+        if (before) {
+            nextFlash -= dt
+            if (nextFlash <= 0f) {
+                flash = 1f
+                flashX = w * (0.15f + 0.7f * rnd.nextFloat())
+                nextFlash = 4f + rnd.nextFloat() * 6f
+                bolt = if (rnd.nextFloat() < 0.55f) makeBolt(flashX) else null
+                boltLife = 0.22f
+            }
+            if (flash > 0f) {
+                // Double pulse, like real lightning.
+                val pulse = if (flash > 0.6f) (flash - 0.6f) / 0.4f else flash / 0.6f * 0.55f
+                p.shader = RadialGradient(flashX, h * 0.15f, w * 0.7f, ((min(1f, pulse) * 140).toInt() shl 24) or 0xDDE6FF, 0, Shader.TileMode.CLAMP)
+                cv.drawRect(0f, 0f, w, h, p)
+                p.shader = null
+                flash -= dt * 2.2f
+            }
+            return
+        }
+        val path = bolt ?: return
+        if (boltLife <= 0f) return
+        boltLife -= dt
+        val a = (boltLife / 0.22f).coerceIn(0f, 1f)
+        p.style = Paint.Style.STROKE
+        p.strokeJoin = Paint.Join.ROUND
+        p.color = ((a * 70).toInt() shl 24) or 0xB9C8FF
+        p.strokeWidth = 7.dpf
+        cv.drawPath(path, p)
+        p.color = ((a * 255).toInt() shl 24) or 0xFFFFFF
+        p.strokeWidth = 1.6f.dpf
+        cv.drawPath(path, p)
+        p.style = Paint.Style.FILL
+        p.color = ((a * 40).toInt() shl 24) or 0xFFFFFF
+        cv.drawRect(0f, 0f, w, h, p)
+    }
+
+    private fun makeBolt(x0: Float): Path {
+        val path = Path()
+        var x = x0
+        var y = h * 0.12f
+        path.moveTo(x, y)
+        val end = h * (0.75f + 0.2f * rnd.nextFloat())
+        while (y < end) {
+            y += h * (0.06f + 0.06f * rnd.nextFloat())
+            x += (rnd.nextFloat() - 0.5f) * w * 0.08f
+            path.lineTo(x, y)
+            if (rnd.nextFloat() < 0.25f) {
+                val bx = x + (rnd.nextFloat() - 0.5f) * w * 0.12f
+                path.lineTo(bx, y + h * 0.08f)
+                path.moveTo(x, y)
+            }
+        }
+        return path
     }
 }

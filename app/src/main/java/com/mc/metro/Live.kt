@@ -39,7 +39,24 @@ object Live {
         val temp: Int, val code: Int, val max: Int, val min: Int,
         val tMax: Int, val tMin: Int, val tCode: Int, val city: String?,
         val isDay: Boolean = true,
-    )
+        val at: Long = System.currentTimeMillis(),
+    ) {
+        fun toJson(): String = JSONObject()
+            .put("t", temp).put("c", code).put("mx", max).put("mn", min)
+            .put("tx", tMax).put("tn", tMin).put("tc", tCode).put("city", city).put("d", isDay).put("at", at)
+            .toString()
+
+        companion object {
+            fun fromJson(s: String): Weather? = runCatching {
+                val j = JSONObject(s)
+                Weather(
+                    j.getInt("t"), j.getInt("c"), j.getInt("mx"), j.getInt("mn"),
+                    j.getInt("tx"), j.getInt("tn"), j.getInt("tc"), j.optString("city").ifEmpty { null },
+                    j.optBoolean("d", true), j.getLong("at"),
+                )
+            }.getOrNull()
+        }
+    }
 
     @Volatile var events: List<Event> = emptyList()
     @Volatile var photos: List<Uri> = emptyList()
@@ -58,8 +75,16 @@ object Live {
     val photoPerm: String
         get() = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_IMAGES else Manifest.permission.READ_EXTERNAL_STORAGE
 
+    /** Last forecast from disk, so the tile has a temperature before (or without) the network. */
+    private fun restoreWeather() {
+        if (weather != null) return
+        val w = Prefs.weatherCache?.let { Weather.fromJson(it) } ?: return
+        if (System.currentTimeMillis() - w.at < 12 * 60 * 60_000L) weather = w
+    }
+
     fun refresh(c: Context, forceWeather: Boolean = false) {
         val app = c.applicationContext
+        restoreWeather()
         bg.execute {
             loadCalendar(app)
             loadPhotos(app)
@@ -133,9 +158,42 @@ object Live {
 
     fun hasLocation(c: Context) = has(c, Manifest.permission.ACCESS_COARSE_LOCATION)
 
+    /**
+     * Where to forecast without needing GPS: the last position the phone already knows (no
+     * request, nothing switched on), else an approximate one from the internet connection.
+     */
+    private fun place(c: Context): Pair<Location, String?>? {
+        location(c)?.let { return it to null }
+        ipPlace()?.let { return it }
+        // Offline or blocked: the last place that worked.
+        if (Prefs.lastPlaceLat != 0f || Prefs.lastPlaceLon != 0f) {
+            return Location("saved").apply { latitude = Prefs.lastPlaceLat.toDouble(); longitude = Prefs.lastPlaceLon.toDouble() } to Prefs.lastPlaceCity
+        }
+        return null
+    }
+
+    /** City-level position from the public IP (no permission, no GPS). */
+    private fun ipPlace(): Pair<Location, String?>? {
+        val sources = listOf(
+            "https://ipwho.is/?fields=success,city,latitude,longitude" to { j: JSONObject -> j.optBoolean("success", false) },
+            "https://ipapi.co/json/" to { j: JSONObject -> !j.optBoolean("error", false) },
+        )
+        for ((url, ok) in sources) {
+            try {
+                val j = JSONObject(http(url))
+                if (!ok(j) || !j.has("latitude")) continue
+                val l = Location("ip").apply { latitude = j.getDouble("latitude"); longitude = j.getDouble("longitude") }
+                return l to j.optString("city").ifEmpty { null }
+            } catch (e: Exception) {
+            }
+        }
+        return null
+    }
+
     private fun location(c: Context): Location? {
         if (!hasLocation(c)) return null
         val lm = c.getSystemService(LocationManager::class.java) ?: return null
+        if (!lm.isLocationEnabled) return null
         var best: Location? = null
         for (p in listOf(LocationManager.NETWORK_PROVIDER, LocationManager.PASSIVE_PROVIDER, "fused", LocationManager.GPS_PROVIDER)) {
             try {
@@ -145,6 +203,8 @@ object Live {
             } catch (e: Exception) {
             }
         }
+        // Older than 3 hours: the phone may have moved, prefer the network position.
+        if (best != null && System.currentTimeMillis() - best!!.time > 3 * 60 * 60_000L) best = null
         if (best == null) {
             val latch = CountDownLatch(1)
             var got: Location? = null
@@ -161,12 +221,14 @@ object Live {
         return best
     }
 
-    private fun loadWeather(c: Context) {
+    /** Fetches the forecast now. Network: call off the main thread (the background job does). */
+    fun loadWeather(c: Context) {
         val manual = Prefs.weatherCity
+        var placeCity: String? = null
         val loc = if (manual != null) {
             Location("manual").apply { latitude = Prefs.weatherLat.toDouble(); longitude = Prefs.weatherLon.toDouble() }
         } else {
-            location(c)
+            place(c)?.let { placeCity = it.second; it.first }
         }
         if (loc == null) {
             lastWeather = 0
@@ -198,13 +260,20 @@ object Live {
                     ?.firstOrNull()?.let { it.locality ?: it.subAdminArea ?: it.adminArea }
             } catch (e: Exception) {
                 null
-            }
+            } ?: placeCity
             weather = Weather(
                 cur.getDouble("temperature_2m").roundToInt(), cur.getInt("weather_code"),
                 mx.getDouble(0).roundToInt(), mn.getDouble(0).roundToInt(),
                 mx.getDouble(1).roundToInt(), mn.getDouble(1).roundToInt(), wc.getInt(1), city,
                 cur.optInt("is_day", 1) == 1,
             )
+            lastWeather = System.currentTimeMillis()
+            Prefs.weatherCache = weather!!.toJson()
+            if (manual == null) {
+                Prefs.lastPlaceLat = loc.latitude.toFloat()
+                Prefs.lastPlaceLon = loc.longitude.toFloat()
+                Prefs.lastPlaceCity = city
+            }
             changed()
             if (Prefs.cityPhoto && city != null) loadCityPhoto(c, city)
         } catch (e: Exception) {
@@ -344,5 +413,34 @@ class NotifService : NotificationListenerService() {
 
     private fun push() {
         try { Notifs.set(activeNotifications) } catch (e: Exception) { }
+    }
+}
+
+/** Hourly forecast refresh in the background, so the weather tile is current when Start opens. */
+class WeatherJob : android.app.job.JobService() {
+    override fun onStartJob(params: android.app.job.JobParameters): Boolean {
+        Thread {
+            runCatching { Live.loadWeather(applicationContext) }
+            jobFinished(params, false)
+        }.start()
+        return true
+    }
+
+    override fun onStopJob(params: android.app.job.JobParameters) = true
+
+    companion object {
+        private const val JOB_ID = 4202
+
+        fun schedule(c: Context) {
+            val js = c.getSystemService(android.app.job.JobScheduler::class.java) ?: return
+            if (js.getPendingJob(JOB_ID) != null) return
+            js.schedule(
+                android.app.job.JobInfo.Builder(JOB_ID, android.content.ComponentName(c, WeatherJob::class.java))
+                    .setRequiredNetworkType(android.app.job.JobInfo.NETWORK_TYPE_ANY)
+                    .setPeriodic(60 * 60_000L, 15 * 60_000L)
+                    .setPersisted(true)
+                    .build()
+            )
+        }
     }
 }

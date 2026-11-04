@@ -195,6 +195,8 @@ class LauncherActivity : Activity(), TileGrid.Host, AppListPage.Host {
         h.removeCallbacks(flipper)
         h.postDelayed(flipper, 1800)
         Live.fx = true
+        // Safety net: straighten any tile an interrupted animation left crooked.
+        h.postDelayed({ if (!launching && !grid.editing) grid.tileViews().forEach { it.settle() } }, 900)
         Updater.autoCheck(this)
         if (!Prefs.askedHome && !HomeRole.isDefault(this)) {
             // Once: without this the home gesture still goes to One UI Home.
@@ -275,8 +277,9 @@ class LauncherActivity : Activity(), TileGrid.Host, AppListPage.Host {
         val e = v.app
         when (v.tile.kind) {
             Tile.APP -> if (e != null) launchApp(e, v)
+            // No location needed: without a city or GPS the forecast uses the network position.
             Tile.WEATHER -> when {
-                !Live.hasLocation(this) -> requestPermissions(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION), 2)
+                Live.weather == null -> Live.refresh(this, true)
                 e != null -> launchApp(e, v)
                 else -> { Live.refresh(this, true); v.flip() }
             }
@@ -406,7 +409,9 @@ class LauncherActivity : Activity(), TileGrid.Host, AppListPage.Host {
         v.cameraDistance = 9000 * DENSITY
         v.pivotX = -v.translationX
         v.pivotY = v.height / 2f
-        v.an(200, delay, AccelerateInterpolator()).rotationY(80f).alpha(0f).start()
+        // Also undo any tilt still in progress: the cancel above stops its way back.
+        val base = (v as? TileView)?.baseScale ?: 1f
+        v.an(200, delay, AccelerateInterpolator()).rotationY(80f).rotationX(0f).scaleX(base).scaleY(base).alpha(0f).start()
     }
 
     private fun restoreFromLaunch(anim: Boolean) {
@@ -418,7 +423,8 @@ class LauncherActivity : Activity(), TileGrid.Host, AppListPage.Host {
         for (v in grid.tileViews()) {
             if (anim && Prefs.animations && v.rotationY != 0f) {
                 val row = ((v.translationY - sy).coerceAtLeast(0f) / u).toLong().coerceAtMost(8)
-                v.an(260, row * 25).rotationY(0f).alpha(1f).withEndAction { v.pivotX = v.width / 2f }.start()
+                v.an(260, row * 25).rotationY(0f).rotationX(0f).scaleX(v.baseScale).scaleY(v.baseScale).alpha(1f)
+                    .withEndAction { v.pivotX = v.width / 2f }.start()
             } else {
                 v.resetTransforms()
                 v.pivotX = v.width / 2f
@@ -448,6 +454,7 @@ class LauncherActivity : Activity(), TileGrid.Host, AppListPage.Host {
 
     private fun flipRandom() {
         if (pager.page != 0 || grid.editing || launching || menu != null) return
+        grid.tileViews().forEach { it.settle() }
         val sy = startScroll.scrollY - startScroll.paddingTop
         val vh = startScroll.height
         grid.tileViews()
