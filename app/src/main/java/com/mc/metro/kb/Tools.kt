@@ -54,6 +54,11 @@ object Emoji {
         Prefs.kbRecentEmoji = l.take(RECENT_MAX).joinToString(" ")
     }
 
+    private val FAVOURITES = "😂 ❤️ 👍 😊 😍 🙏 😘 😭 🔥 😅 🥰 👏".split(' ')
+
+    /** The emoji row above the keys: recent ones first, then common ones. */
+    fun row(n: Int): List<String> = (recent() + FAVOURITES).distinct().take(n)
+
     fun category(i: Int): List<String> = if (i == 0) recent() else CATS.getOrElse(i - 1) { emptyList() }
 }
 

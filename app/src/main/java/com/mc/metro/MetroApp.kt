@@ -178,6 +178,9 @@ object Prefs {
     var kbDoubleSpace: Boolean
         get() = b("kb_double_space", true)
         set(v) = put("kb_double_space", v)
+    var kbEmojiRow: Boolean
+        get() = b("kb_emoji_row", true)
+        set(v) = put("kb_emoji_row", v)
     var kbNumberRow: Boolean
         get() = b("kb_number_row", true)
         set(v) = put("kb_number_row", v)

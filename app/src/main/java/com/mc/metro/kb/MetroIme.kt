@@ -56,6 +56,18 @@ class MetroIme : InputMethodService() {
         super.onDestroy()
     }
 
+    /** The system bar under the keyboard (gesture handle, hide and switch buttons) in the keyboard's colour. */
+    private fun paintNavBar() {
+        val w = window?.window ?: return
+        // One UI draws its own bar under the keyboard over the window background: paint both.
+        w.decorView.setBackgroundColor(kv.bgColor)
+        w.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(kv.bgColor))
+        w.navigationBarColor = kv.bgColor
+        w.isNavigationBarContrastEnforced = false
+        val flag = android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+        w.insetsController?.setSystemBarsAppearance(if (Prefs.light) flag else 0, flag)
+    }
+
     /** Keeps copied text for the clipboard panel; clips marked sensitive (passwords) are skipped. */
     private fun grabClip() {
         runCatching {
@@ -97,6 +109,7 @@ class MetroIme : InputMethodService() {
         mode = if (numeric || phone) NUM else ABC
         kv.status = null
         kv.applyTheme()
+        paintNavBar()
         kv.enterLabel = enterLabel(info)
         kv.shift = 0
         autoShifted = false
@@ -146,7 +159,7 @@ class MetroIme : InputMethodService() {
             CLIP -> Layouts.clips(Clips.list(), clipPage)
             EDIT -> Layouts.edit()
             TRANS -> Layouts.translate(Prefs.kbLang)
-            else -> Layouts.letters(mid, Prefs.kbNumberRow, Prefs.kbHints)
+            else -> Layouts.letters(mid, Prefs.kbNumberRow, Prefs.kbHints, Prefs.kbEmojiRow && suggestOn)
         }
         kv.activeTool = when (mode) { EMOJI -> 0; CLIP -> 1; EDIT -> 2; TRANS -> 3; else -> -1 }
     }
@@ -203,7 +216,7 @@ class MetroIme : InputMethodService() {
             K.REDO -> ctrl(KeyEvent.KEYCODE_Z, true)
             K.SPACE -> space()
             else -> {
-                if (mode == EMOJI) Emoji.addRecent(k.output)
+                if (k.code == 0) Emoji.addRecent(k.output)
                 typeText(if (kv.shift > 0 && mode == ABC) k.output.uppercase() else k.output)
             }
         }

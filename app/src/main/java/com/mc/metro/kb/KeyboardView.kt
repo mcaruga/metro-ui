@@ -44,7 +44,10 @@ class KeyboardView(c: Context, private val ime: MetroIme) : View(c) {
 
     private val stripH = 44.dp
     /** Every layout shares the same height, so the keyboard never jumps between panels. */
-    private val areaH get() = if (Prefs.kbNumberRow) 5 * 48.dp else 4 * 54.dp
+    private val areaH: Int get() {
+        val n = 4 + (if (Prefs.kbNumberRow) 1 else 0) + (if (Prefs.kbEmojiRow) 1 else 0)
+        return n * when (n) { 4 -> 54.dp; 5 -> 48.dp; else -> 45.dp }
+    }
     private val rowH get() = areaH / rows.size.coerceAtLeast(1)
     private val gp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -55,7 +58,8 @@ class KeyboardView(c: Context, private val ime: MetroIme) : View(c) {
     private val gap = 4.dpf
     private var sysBottom = 0
 
-    private var bgColor = 0
+    var bgColor = 0
+        private set
     private var keyColor = 0
     private var fnColor = 0
     private var textColor = 0

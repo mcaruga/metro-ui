@@ -89,7 +89,8 @@ object Layouts {
         enter(),
     )
 
-    fun letters(mid: Key, numberRow: Boolean, showHints: Boolean): List<List<Key>> =
+    fun letters(mid: Key, numberRow: Boolean, showHints: Boolean, emojiRow: Boolean): List<List<Key>> =
+        (if (emojiRow) listOf(Emoji.row(10).map { Key(it, 0, text = it) }) else emptyList()) +
         (if (numberRow) listOf(keys(DIGITS)) else emptyList()) + listOf(
             letterKeys("qwertyuiop", numberRow, showHints),
             listOf(spacer(0.5f)) + letterKeys("asdfghjkl", numberRow, showHints) + spacer(0.5f),
