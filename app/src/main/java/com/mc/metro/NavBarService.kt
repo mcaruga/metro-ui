@@ -20,10 +20,11 @@ import android.view.accessibility.AccessibilityEvent
 
 /**
  * Optional Windows Phone navigation bar (back · start · search), drawn as an accessibility
- * overlay. Off by default: with One UI gestures nothing is shown.
+ * overlay, and host of the Metro action center. Both are off by default.
  */
 class NavBarService : AccessibilityService(), SharedPreferences.OnSharedPreferenceChangeListener {
     private var bar: View? = null
+    private var center: ActionCenter? = null
     private lateinit var wm: WindowManager
 
     companion object {
@@ -42,11 +43,14 @@ class NavBarService : AccessibilityService(), SharedPreferences.OnSharedPreferen
         wm = getSystemService(WindowManager::class.java)
         Prefs.sp.registerOnSharedPreferenceChangeListener(this)
         sync()
+        center = ActionCenter(this).also { it.start() }
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
         running = false
         hide()
+        center?.stop()
+        center = null
         Prefs.sp.unregisterOnSharedPreferenceChangeListener(this)
         return super.onUnbind(intent)
     }
@@ -54,6 +58,8 @@ class NavBarService : AccessibilityService(), SharedPreferences.OnSharedPreferen
     override fun onDestroy() {
         running = false
         hide()
+        center?.stop()
+        center = null
         super.onDestroy()
     }
 
@@ -62,6 +68,12 @@ class NavBarService : AccessibilityService(), SharedPreferences.OnSharedPreferen
             hide()
             sync()
         }
+        if (key == "action_center") center?.syncStrip()
+    }
+
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        center?.onConfigurationChanged()
     }
 
     private fun sync() {
@@ -104,7 +116,9 @@ class NavBarService : AccessibilityService(), SharedPreferences.OnSharedPreferen
         bar = null
     }
 
-    override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
+    override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) center?.onWindowEvent(event)
+    }
     override fun onInterrupt() {}
 }
 

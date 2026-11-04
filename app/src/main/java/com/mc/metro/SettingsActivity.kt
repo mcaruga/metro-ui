@@ -156,13 +156,26 @@ class SettingsActivity : Activity() {
 
         header("navigazione")
         toggle(
+            "centro notifiche metro",
+            "scorri dall'alto per notifiche e impostazioni rapide in stile Windows Phone, al posto del pannello di One UI. Tieni premuto in alto per aprire quello di One UI. Sulla schermata di blocco resta quello di One UI.",
+            { Prefs.actionCenter },
+        ) {
+            Prefs.actionCenter = it
+            if (it) ensureCenterAccess()
+        }
+        button("permessi centro notifiche", { centerSummary() }) { ensureCenterAccess(true) }
+        button("prova il centro notifiche", { if (NavBarService.running) "apre il pannello adesso" else "serve \"Metro barra e centro notifiche\" nei servizi di accessibilità" }) {
+            val ac = ActionCenter.current
+            if (ac != null && Prefs.actionCenter) ac.open() else ensureCenterAccess()
+        }
+        toggle(
             "barra windows phone",
             "indietro · start · cerca in fondo allo schermo. Lascia disattivato per usare le gesture di One UI.",
             { Prefs.navBar },
         ) {
             Prefs.navBar = it
             if (it && !NavBarService.isEnabled(this)) {
-                Toast.makeText(this, "attiva \"Metro barra\" in Servizi installati", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "attiva \"Metro barra e centro notifiche\" in App installate", Toast.LENGTH_LONG).show()
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             }
         }
@@ -315,6 +328,31 @@ class SettingsActivity : Activity() {
     private fun notifEnabled(): Boolean {
         val s = Settings.Secure.getString(contentResolver, "enabled_notification_listeners") ?: return false
         return s.split(':').any { ComponentName.unflattenFromString(it)?.packageName == packageName }
+    }
+
+    private fun centerSummary(): String {
+        val miss = ArrayList<String>()
+        if (!NavBarService.isEnabled(this)) miss += "accessibilità"
+        if (!notifEnabled()) miss += "accesso notifiche"
+        if (!Settings.System.canWrite(this)) miss += "modifica impostazioni (rotazione, luminosità)"
+        return if (miss.isEmpty()) "tutto concesso" else "mancano: " + miss.joinToString(", ") + " · tocca"
+    }
+
+    /** Walks through the three grants the action center needs, one screen at a time. */
+    private fun ensureCenterAccess(all: Boolean = false) {
+        when {
+            !NavBarService.isEnabled(this) -> {
+                Toast.makeText(this, "attiva \"Metro barra e centro notifiche\" in App installate. Se è grigio: Info app › ⋮ › Consenti impostazioni con restrizioni", Toast.LENGTH_LONG).show()
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+            !notifEnabled() -> {
+                Toast.makeText(this, "consenti l'accesso alle notifiche a Metro", Toast.LENGTH_LONG).show()
+                startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+            }
+            !Settings.System.canWrite(this) && all -> {
+                startActivity(Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, android.net.Uri.parse("package:$packageName")))
+            }
+        }
     }
 
     private fun imeEnabled(): Boolean =

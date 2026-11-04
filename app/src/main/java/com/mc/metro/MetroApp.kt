@@ -142,6 +142,13 @@ object Prefs {
     var navBar: Boolean
         get() = b("nav_bar", false)
         set(v) = put("nav_bar", v)
+    /** Metro action center in place of the One UI shade (swipe down from the status bar). */
+    var actionCenter: Boolean
+        get() = b("action_center", false)
+        set(v) = put("action_center", v)
+    var acExpanded: Boolean
+        get() = b("ac_expanded", false)
+        set(v) = put("ac_expanded", v)
     var askedHome: Boolean
         get() = b("asked_home", false)
         set(v) = put("asked_home", v)

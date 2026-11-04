@@ -398,14 +398,21 @@ object Notifs {
 }
 
 class NotifService : NotificationListenerService() {
+    companion object {
+        /** The connected listener, used by the action center to list and dismiss notifications. */
+        @Volatile var instance: NotifService? = null
+    }
+
     override fun onListenerConnected() {
         Notifs.connected = true
+        instance = this
         Media.init(this)
         push()
     }
 
     override fun onListenerDisconnected() {
         Notifs.connected = false
+        instance = null
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) = push()
