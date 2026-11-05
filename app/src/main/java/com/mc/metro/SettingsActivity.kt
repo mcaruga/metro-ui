@@ -138,6 +138,7 @@ class SettingsActivity : Activity() {
         header("start")
         toggle("mostra più riquadri", "tre colonne di riquadri medi invece di due", { Prefs.moreTiles }) { Prefs.moreTiles = it }
         toggle("icone a colori nella lista app", "i riquadri di start usano sempre icone flat bianche", { Prefs.listColor }) { Prefs.listColor = it }
+        choice("motore di ricerca", WebSearch.ENGINES.mapIndexed { i, e -> e.short to i.toFloat() }, { Prefs.searchEngine.toFloat() }) { Prefs.searchEngine = it.toInt() }
         toggle("animazioni", "tilt al tocco, riquadri che girano, transizioni", { Prefs.animations }) { Prefs.animations = it }
         toggle("schermata di avvio app", "splash colorato quando apri un'app", { Prefs.splash }) { Prefs.splash = it }
         button("imposta come schermata home", { if (HomeRole.isDefault(this)) "Metro è la home predefinita" else "non attiva: il gesto home apre One UI · tocca per scegliere Metro" }) {
@@ -178,7 +179,7 @@ class SettingsActivity : Activity() {
         button("impostazioni rapide", { "${Prefs.acTiles.size} attive · tocca per aggiungere, togliere e riordinare" }) { QuickDialog(this) { rebuild() }.show() }
         button("permessi centro notifiche", { centerSummary() }) { ensureCenterAccess(true) }
         button("riattivazione automatica", {
-            if (NavBarService.canRepair(this)) "attiva: se un aggiornamento scollega Metro, si riaccende da solo"
+            if (NavBarService.canRepair(this)) "attiva: Metro si riaccende da solo dopo gli aggiornamenti e cambia pulsanti/gesture con la barra windows phone"
             else "dopo un aggiornamento Android può scollegare Metro. Per farlo riaccendere da solo serve un comando adb, una volta: tocca per copiarlo"
         }) {
             if (!NavBarService.canRepair(this)) {
@@ -194,11 +195,15 @@ class SettingsActivity : Activity() {
         }
         toggle(
             "barra windows phone",
-            "indietro · start · cerca al posto dei pulsanti di One UI, alla stessa altezza, senza coprire le app. Tieni premuto indietro o start per il multitasking. Serve la navigazione a pulsanti: Impostazioni › Display › Barra di navigazione › Pulsanti. Con le gesture la barra resta nascosta.",
+            "indietro · start · cerca al posto dei pulsanti di One UI, alla stessa altezza, senza coprire le app. Tieni premuto indietro o start per il multitasking. Accendendola One UI passa ai pulsanti, spegnendola torna alle gesture (serve la riattivazione automatica qui sotto).",
             { Prefs.navBar },
         ) {
+            // Buttons under the Metro bar, gestures without it.
+            val switched = NavBarService.setSystemButtons(this, it)
             Prefs.navBar = it
-            if (it && !NavBarService.isEnabled(this)) {
+            if (switched) {
+                Toast.makeText(this, if (it) "One UI passa ai pulsanti" else "One UI torna alle gesture", Toast.LENGTH_SHORT).show()
+            } else if (it && !NavBarService.isEnabled(this)) {
                 Toast.makeText(this, "attiva \"Metro barra e centro notifiche\" in App installate", Toast.LENGTH_LONG).show()
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             } else if (it && !NavBarService.buttonNavigation(this)) {

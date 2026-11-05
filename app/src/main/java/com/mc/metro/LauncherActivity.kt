@@ -302,6 +302,20 @@ class LauncherActivity : Activity(), TileGrid.Host, AppListPage.Host {
 
     override fun launch(e: AppEntry, from: View) = launchApp(e, from)
 
+    override fun open(i: Intent, from: View) {
+        launchWith(from, null) {
+            returning = true
+            try {
+                startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), ActivityOptions.makeCustomAnimation(this, android.R.anim.fade_in, android.R.anim.fade_out).toBundle())
+            } catch (ex: Exception) {
+                Toast.makeText(this, "nessuna app per aprire la ricerca", Toast.LENGTH_SHORT).show()
+                returning = false
+                launching = false
+                restoreFromLaunch(true)
+            }
+        }
+    }
+
     override fun appMenu(e: AppEntry, from: View) {
         val pinned = TileStore.isPinned(e.key)
         showMenu(

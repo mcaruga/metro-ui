@@ -63,6 +63,10 @@ object Prefs {
     var listColor: Boolean
         get() = b("list_color", true)
         set(v) { put("list_color", v); bump() }
+    /** Index into [WebSearch.ENGINES]. */
+    var searchEngine: Int
+        get() = sp.getInt("search_engine", 0)
+        set(v) = sp.edit().putInt("search_engine", v).apply()
     var iconScale: Float
         get() = sp.getFloat("icon_scale", 1f)
         set(v) { sp.edit().putFloat("icon_scale", v).apply(); bump() }

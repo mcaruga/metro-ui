@@ -2,6 +2,7 @@ package com.mc.metro
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.Intent
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.drawable.ColorDrawable
@@ -31,6 +32,7 @@ class AppListPage(c: Context, private val host: Host) : FrameLayout(c) {
     interface Host {
         fun launch(e: AppEntry, from: View)
         fun appMenu(e: AppEntry, from: View)
+        fun open(i: Intent, from: View)
     }
 
     private val list = ListView(c)
@@ -67,8 +69,12 @@ class AppListPage(c: Context, private val host: Host) : FrameLayout(c) {
                 override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
                 override fun afterTextChanged(s: Editable?) = reload()
             })
+            // Go opens the first app that matches, otherwise searches the web.
             setOnEditorActionListener { _, _, _ ->
-                (rows.firstOrNull { it is AppEntry } as? AppEntry)?.let { host.launch(it, this) }
+                when (val r = rows.firstOrNull { it is AppEntry || it is WebSearch.Row }) {
+                    is AppEntry -> host.launch(r, this)
+                    is WebSearch.Row -> host.open(r.intent(context), this)
+                }
                 true
             }
         }
@@ -90,6 +96,7 @@ class AppListPage(c: Context, private val host: Host) : FrameLayout(c) {
                 when (val r = rows[position]) {
                     is String -> showJump()
                     is AppEntry -> host.launch(r, view)
+                    is WebSearch.Row -> host.open(r.intent(context), view)
                 }
             }
             setOnItemLongClickListener { _, view, position, _ ->
@@ -140,7 +147,8 @@ class AppListPage(c: Context, private val host: Host) : FrameLayout(c) {
     private fun build(q: String): List<Any> {
         if (q.isNotBlank()) {
             val n = Apps.normalize(q.trim())
-            return Apps.all.filter { it.norm.contains(n) }.sortedBy { if (it.norm.startsWith(n)) 0 else 1 }
+            val apps = Apps.all.filter { it.norm.contains(n) }.sortedBy { if (it.norm.startsWith(n)) 0 else 1 }
+            return apps + WebSearch.rows(q.trim())
         }
         val out = ArrayList<Any>()
         var last = ""
@@ -423,21 +431,31 @@ class AppListPage(c: Context, private val host: Host) : FrameLayout(c) {
         override fun getCount() = rows.size
         override fun getItem(position: Int): Any = rows[position]
         override fun getItemId(position: Int) = position.toLong()
-        override fun getViewTypeCount() = 2
-        override fun getItemViewType(position: Int) = if (rows[position] is String) 0 else 1
+        override fun getViewTypeCount() = 3
+        override fun getItemViewType(position: Int) = when (rows[position]) {
+            is String -> 0
+            is WebSearch.Row -> 2
+            else -> 1
+        }
         override fun isEnabled(position: Int) = true
 
         override fun getView(position: Int, convert: View?, parent: ViewGroup?): View {
-            val r = rows[position]
-            return if (r is String) {
-                val v = (convert as? LetterRow) ?: LetterRow(context)
-                v.letter = r
-                v
-            } else {
-                val e = r as AppEntry
-                val v = (convert as? AppRow) ?: AppRow(context)
-                v.bind(e)
-                v
+            return when (val r = rows[position]) {
+                is String -> {
+                    val v = (convert as? LetterRow) ?: LetterRow(context)
+                    v.letter = r
+                    v
+                }
+                is WebSearch.Row -> {
+                    val v = (convert as? WebRow) ?: WebRow(context)
+                    v.bind(r)
+                    v
+                }
+                else -> {
+                    val v = (convert as? AppRow) ?: AppRow(context)
+                    v.bind(r as AppEntry)
+                    v
+                }
             }
         }
     }
@@ -497,6 +515,50 @@ class AppListPage(c: Context, private val host: Host) : FrameLayout(c) {
             else icon.clearColorFilter()
             name.text = e.label
             contentDescription = e.label
+        }
+    }
+
+    /** "search the web for …" row under the matching apps: accent square with the glyph, query, where. */
+    private class WebRow(c: Context) : LinearLayout(c) {
+        private val icon = GlyphView(c)
+        private val title = c.label("", 21f * Prefs.textScale * Prefs.labelScale)
+        private val where = c.label("", 14f * Prefs.textScale, Prefs.accent, Metro.regular)
+
+        init {
+            orientation = HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(20.dp, 0, 16.dp, 0)
+            minimumHeight = (66 * maxOf(Prefs.textScale * Prefs.labelScale, Prefs.iconScale)).dp
+            addView(icon, LayoutParams((50 * Prefs.iconScale).dp, (50 * Prefs.iconScale).dp))
+            val txt = LinearLayout(c).apply { orientation = VERTICAL }
+            title.maxLines = 1
+            title.ellipsize = android.text.TextUtils.TruncateAt.END
+            txt.addView(title)
+            txt.addView(where)
+            addView(txt, LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f).apply { leftMargin = 14.dp })
+        }
+
+        fun bind(r: WebSearch.Row) {
+            icon.glyph = r.glyph
+            icon.invalidate()
+            title.text = "“${r.query}”"
+            where.text = r.where
+            contentDescription = "cerca ${r.query} ${r.where}"
+        }
+    }
+
+    private class GlyphView(c: Context) : View(c) {
+        var glyph = Glyphs.SEARCH
+        private val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 2.dpf
+            strokeCap = Paint.Cap.SQUARE
+        }
+
+        override fun onDraw(cv: Canvas) {
+            cv.drawColor(Prefs.accent)
+            p.color = Prefs.tileFg
+            Glyphs.draw(cv, glyph, width / 2f, height / 2f, width * 0.36f, p)
         }
     }
 }

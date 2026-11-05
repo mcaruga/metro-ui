@@ -93,6 +93,20 @@ class NavBarService : AccessibilityService(), SharedPreferences.OnSharedPreferen
             return target.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
 
+        /** One UI keeps its navigation type here: 1 swipe gestures, 0 buttons. Absent elsewhere. */
+        private const val ONEUI_NAV = "navigation_bar_gesture_while_hidden"
+
+        /**
+         * Switches One UI between buttons ([buttons] true) and gestures, so the Metro bar has the
+         * system bar's room under it. False when it can't (not One UI, or no WRITE_SECURE_SETTINGS).
+         */
+        fun setSystemButtons(c: Context, buttons: Boolean): Boolean {
+            if (!canRepair(c)) return false
+            val cr = c.contentResolver
+            if (Settings.Global.getString(cr, ONEUI_NAV) == null) return false
+            return runCatching { Settings.Global.putInt(cr, ONEUI_NAV, if (buttons) 0 else 1) }.getOrDefault(false)
+        }
+
         private const val CHANNEL = "service"
         private const val STUCK_ID = 4401
 
@@ -152,6 +166,8 @@ class NavBarService : AccessibilityService(), SharedPreferences.OnSharedPreferen
             hide()
             sync()
         }
+        // One UI takes a moment to swap buttons and gestures; measure the system bar again after it.
+        if (key == "nav_bar") resyncLater()
         if (key == "action_center") center?.syncStrip()
     }
 
@@ -161,6 +177,15 @@ class NavBarService : AccessibilityService(), SharedPreferences.OnSharedPreferen
         hide()
         sync()
         center?.onConfigurationChanged()
+    }
+
+    private val main = Handler(Looper.getMainLooper())
+    private val resync = Runnable { hide(); sync() }
+
+    private fun resyncLater() {
+        main.removeCallbacks(resync)
+        main.postDelayed(resync, 700)
+        main.postDelayed({ if (running) resync.run() }, 1800)
     }
 
     private fun sync() {
