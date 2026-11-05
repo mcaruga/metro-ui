@@ -98,6 +98,17 @@ object Apps {
 
     fun byPkg(pkg: String?): AppEntry? = if (pkg == null) null else all.firstOrNull { it.pkg == pkg }
 
+    /** Installed apps that can show a photo and have an icon to open them from, by name. */
+    fun photoViewers(c: Context): List<AppEntry> {
+        val view = Intent(Intent.ACTION_VIEW).setType("image/*")
+        val pkgs = try {
+            c.packageManager.queryIntentActivities(view, PackageManager.MATCH_DEFAULT_ONLY).map { it.activityInfo.packageName }.toSet()
+        } catch (e: Exception) {
+            emptySet()
+        }
+        return pkgs.mapNotNull { byPkg(it) }.distinctBy { it.pkg }.sortedBy { it.norm }
+    }
+
     fun resolve(c: Context, intent: Intent): AppEntry? = try {
         val pkg = c.packageManager.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY)?.activityInfo?.packageName
         if (pkg == null || pkg == "android") null else byPkg(pkg)

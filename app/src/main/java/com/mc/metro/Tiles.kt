@@ -75,6 +75,11 @@ object TileStore {
         }
     }
 
+    /** Live tiles pick up a changed app (e.g. the photo viewer) on the next rebuild. */
+    fun touch() {
+        version++
+    }
+
     fun save() {
         val a = JSONArray()
         tiles.forEach { a.put(it.toJson()) }
@@ -107,7 +112,8 @@ object TileStore {
             ?: Apps.byPkg("com.sec.android.app.clockpackage")
         Tile.CALENDAR -> Apps.resolve(c, Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_CALENDAR))
             ?: Apps.byPkg("com.samsung.android.calendar")
-        Tile.PHOTOS -> Apps.resolve(c, Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_GALLERY))
+        Tile.PHOTOS -> Apps.byPkg(Prefs.photoApp)
+            ?: Apps.resolve(c, Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_GALLERY))
             ?: Apps.byPkg("com.sec.android.gallery3d") ?: Apps.byPkg("com.google.android.apps.photos")
         Tile.WEATHER -> Apps.byPkg("com.sec.android.daemonapp") ?: Apps.byPkg("com.google.android.apps.weather")
         else -> null

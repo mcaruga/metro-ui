@@ -160,6 +160,9 @@ class SettingsActivity : Activity() {
         choice("cambio foto", listOf("5 s" to 5f, "15 s" to 15f, "1 min" to 60f, "5 min" to 300f, "casuale" to 0f), { Prefs.photoInterval.toFloat() }) { Prefs.photoInterval = it.toInt() }
         choice("dimensione fusi orari", listOf("piccola" to 0.7f, "media" to 0.85f, "grande" to 1f), { Prefs.zoneScale }) { Prefs.zoneScale = it }
         button("fusi orari orologio", { Prefs.clockZones.joinToString(", ") { Zones.name(it) }.ifEmpty { "nessuno · tocca per aggiungere città" } }) { zonesDialog() }
+        button("app per le foto", { (TileStore.liveApp(this, Tile.PHOTOS)?.label ?: "nessuna") + (if (Prefs.photoApp == null) " · scelta automatica, tocca per sceglierla tu" else "") }) {
+            PhotoAppDialog(this) { Prefs.photoApp = it.pkg; TileStore.touch(); rebuild() }.show()
+        }
         button("città meteo", { Prefs.weatherCity ?: "automatica: posizione già nota o rete internet, senza GPS" + (Live.weather?.city?.let { " · $it" } ?: "") }) { cityDialog() }
         toggle("foto della città sul meteo", "immagine della città da Wikipedia con l'animazione del tempo", { Prefs.cityPhoto }) {
             Prefs.cityPhoto = it
@@ -954,6 +957,46 @@ class QuickDialog(private val a: Activity, private val done: () -> Unit) : Dialo
             t.onChange = { v -> if (v) on += id else on -= id; save(); list.post { fill() } }
             row.addView(t, LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { leftMargin = 6.dp })
             list.addView(row)
+        }
+    }
+}
+
+/** Picks the app the photo tile opens, among the installed photo viewers. */
+class PhotoAppDialog(private val a: Activity, private val done: (AppEntry) -> Unit) : Dialog(a, android.R.style.Theme_Material_NoActionBar) {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        window?.setBackgroundDrawable(ColorDrawable(Metro.bg))
+        window?.setDecorFitsSystemWindows(false)
+        val col = LinearLayout(context).apply { orientation = LinearLayout.VERTICAL; setPadding(20.dp, 0, 20.dp, 0) }
+        val sv = ScrollView(context).apply { addView(col); isVerticalScrollBarEnabled = false; clipToPadding = false }
+        sv.setOnApplyWindowInsetsListener { v, ins ->
+            val b = ins.getInsets(WindowInsets.Type.systemBars())
+            v.setPadding(0, b.top + 12.dp, 0, b.bottom + 16.dp)
+            ins
+        }
+        setContentView(sv)
+        col.addView(context.label("RIQUADRO FOTO", 14f, Metro.fg, Metro.semibold))
+        col.addView(context.label("apri con", 40f).apply { setPadding(0, 0, 0, 4.dp) })
+        col.addView(context.label("la foto si apre in quest'app; con indietro vedi il resto della galleria. Puoi cambiarla in Impostazioni Metro › riquadri live.", 14f, Metro.sub, Metro.regular).apply { maxLines = 4; setPadding(0, 0, 0, 12.dp) })
+        val cur = TileStore.liveApp(context, Tile.PHOTOS)?.pkg
+        for (e in Apps.photoViewers(context)) {
+            val on = e.pkg == cur
+            val row = LinearLayout(context).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(0, 8.dp, 0, 8.dp)
+                isClickable = true
+                contentDescription = e.label
+                setOnClickListener { done(e); dismiss() }
+            }
+            val icon = android.widget.ImageView(context).apply {
+                setImageBitmap(Apps.icon(e, 44.dp, false))
+                setPadding(3.dp, 3.dp, 3.dp, 3.dp)
+                setBackgroundColor(if (on) Prefs.accent else 0)
+            }
+            row.addView(icon, LinearLayout.LayoutParams(50.dp, 50.dp))
+            row.addView(context.label(e.label, 21f, if (on) Prefs.accent else Metro.fg, Metro.regular).apply { setPadding(14.dp, 0, 0, 0) })
+            col.addView(row)
         }
     }
 }

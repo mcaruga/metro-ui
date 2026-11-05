@@ -63,6 +63,10 @@ object Prefs {
     var listColor: Boolean
         get() = b("list_color", true)
         set(v) { put("list_color", v); bump() }
+    /** Package of the app the photo tile opens; null until the user picks one. */
+    var photoApp: String?
+        get() = sp.getString("photo_app", null)
+        set(v) = sp.edit().putString("photo_app", v).apply()
     /** Index into [WebSearch.ENGINES]. */
     var searchEngine: Int
         get() = sp.getInt("search_engine", 0)

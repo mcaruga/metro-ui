@@ -286,6 +286,13 @@ class LauncherActivity : Activity(), TileGrid.Host, AppListPage.Host {
             }
             Tile.PHOTOS -> when {
                 !Live.has(this, Live.photoPerm) -> requestPermissions(arrayOf(Live.photoPerm), 3)
+                // First tap: the user picks the gallery (Samsung, Google Photos, …) instead of us guessing.
+                Prefs.photoApp == null && Apps.photoViewers(this).size > 1 -> PhotoAppDialog(this) { pick ->
+                    Prefs.photoApp = pick.pkg
+                    TileStore.touch() // the tile takes the new app's glyph when start is rebuilt on return
+                    val uri = v.photoUri
+                    if (uri != null) openPhoto(uri, pick, v) else launchApp(pick, v)
+                }.show()
                 v.photoUri != null -> openPhoto(v.photoUri!!, e, v)
                 e != null -> launchApp(e, v)
             }
