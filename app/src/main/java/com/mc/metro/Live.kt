@@ -408,6 +408,7 @@ class NotifService : NotificationListenerService() {
         instance = this
         Media.init(this)
         push()
+        watch()
     }
 
     override fun onListenerDisconnected() {
@@ -415,7 +416,24 @@ class NotifService : NotificationListenerService() {
         instance = null
     }
 
-    override fun onNotificationPosted(sbn: StatusBarNotification?) = push()
+    override fun onNotificationPosted(sbn: StatusBarNotification?) {
+        push()
+        watch()
+    }
+
+    private var lastWatch = 0L
+
+    /**
+     * The listener is rebound on its own when Metro's process is restarted, the accessibility
+     * service not always: it keeps an eye on it while the user is in other apps.
+     */
+    private fun watch() {
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (now - lastWatch < 30_000 || !NavBarService.stuck(this)) return
+        lastWatch = now
+        // Give a service that is just binding time to connect before switching it off and on.
+        Live.main.postDelayed({ runCatching { NavBarService.check(applicationContext) } }, 8_000)
+    }
     override fun onNotificationRemoved(sbn: StatusBarNotification?) = push()
 
     private fun push() {

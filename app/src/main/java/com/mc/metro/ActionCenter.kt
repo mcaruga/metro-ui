@@ -30,6 +30,7 @@ import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
 import android.os.Build
+import android.os.SystemClock
 import android.os.PowerManager
 import android.provider.Settings
 import android.service.notification.StatusBarNotification
@@ -76,6 +77,7 @@ class ActionCenter(private val svc: AccessibilityService) {
     private val wm = svc.getSystemService(WindowManager::class.java)
     private val km = svc.getSystemService(KeyguardManager::class.java)
     private var strip: View? = null
+    private var stripAt = 0L
     private var panel: Panel? = null
     private var openedAt = 0L
     private var torchId: String? = null
@@ -125,7 +127,12 @@ class ActionCenter(private val svc: AccessibilityService) {
     fun syncStrip() {
         val want = Prefs.actionCenter && !km.isKeyguardLocked &&
             svc.resources.configuration.orientation != Configuration.ORIENTATION_LANDSCAPE
-        if (want && strip == null) addStrip() else if (!want) removeStrip()
+        // A strip the system detached (it happens on One UI) is put back, not trusted.
+        val lost = strip?.let { !it.isAttachedToWindow && SystemClock.elapsedRealtime() - stripAt > 2_000 } == true
+        if (want && (strip == null || lost)) {
+            removeStrip()
+            addStrip()
+        } else if (!want) removeStrip()
     }
 
     fun onConfigurationChanged() {
@@ -134,8 +141,12 @@ class ActionCenter(private val svc: AccessibilityService) {
         syncStrip()
     }
 
-    /** Leaving to another app (home, recents, a launched activity) closes the panel. */
+    /**
+     * Every app switch also puts the strip back if the unlock broadcast was missed or the system
+     * dropped it. Leaving to another app (home, recents, a launched activity) closes the panel.
+     */
     fun onWindowEvent(e: AccessibilityEvent) {
+        if (panel == null) syncStrip()
         if (panel == null || System.currentTimeMillis() - openedAt < 600) return
         val pkg = e.packageName?.toString() ?: return
         if (pkg == "com.android.systemui") return
@@ -172,6 +183,7 @@ class ActionCenter(private val svc: AccessibilityService) {
         try {
             wm.addView(v, overlayParams(max(statusHeight(), 24.dp), false))
             strip = v
+            stripAt = SystemClock.elapsedRealtime()
         } catch (e: Exception) {
             strip = null
         }
