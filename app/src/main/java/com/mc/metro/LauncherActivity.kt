@@ -363,17 +363,26 @@ class LauncherActivity : Activity(), TileGrid.Host, AppListPage.Host {
         }, out)
     }
 
-    /** The photo shown on the photo tile, in the gallery (the tile's app first, any viewer otherwise). */
+    /**
+     * The photo shown on the photo tile, in the gallery (the tile's app first, any viewer otherwise).
+     * With the tile's app, the photo opens on top of the gallery's own home, so back leads to all
+     * the other photos and albums instead of out of the app.
+     */
     private fun openPhoto(uri: Uri, gallery: AppEntry?, from: View) {
         val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, "image/*")
             .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-        val i = if (gallery != null && Intent(view).setPackage(gallery.pkg).resolveActivity(packageManager) != null) {
-            Intent(view).setPackage(gallery.pkg)
-        } else view
+        val own = gallery != null && gallery.user == android.os.Process.myUserHandle() &&
+            Intent(view).setPackage(gallery.pkg).resolveActivity(packageManager) != null
+        val stack = if (own) arrayOf(
+            Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setComponent(gallery!!.component)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK),
+            Intent(Intent.ACTION_VIEW).setDataAndType(uri, "image/*").setPackage(gallery.pkg)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
+        ) else arrayOf(view)
         launchWith(from, gallery) {
             returning = true
             try {
-                startActivity(i, ActivityOptions.makeCustomAnimation(this, android.R.anim.fade_in, android.R.anim.fade_out).toBundle())
+                startActivities(stack, ActivityOptions.makeCustomAnimation(this, android.R.anim.fade_in, android.R.anim.fade_out).toBundle())
             } catch (ex: Exception) {
                 Toast.makeText(this, "nessuna app per aprire la foto", Toast.LENGTH_SHORT).show()
                 returning = false
