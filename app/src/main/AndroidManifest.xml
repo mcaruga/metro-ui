@@ -24,6 +24,10 @@
     <uses-permission
         android:name="android.permission.WRITE_SETTINGS"
         tools:ignore="ProtectedPermissions" />
+    <!-- Granted only by hand over adb; lets Metro switch its accessibility service back on after an update. -->
+    <uses-permission
+        android:name="android.permission.WRITE_SECURE_SETTINGS"
+        tools:ignore="ProtectedPermissions" />
 
     <application
         android:name=".MetroApp"
@@ -127,5 +131,14 @@
         <receiver
             android:name=".UpdateReceiver"
             android:exported="false" />
+
+        <receiver
+            android:name=".ServiceCheckReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>

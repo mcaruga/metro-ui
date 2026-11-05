@@ -1,14 +1,24 @@
 package com.mc.metro
 
+import android.Manifest
 import android.accessibilityservice.AccessibilityService
 import android.annotation.SuppressLint
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.pm.PackageManager
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.PixelFormat
+import android.os.Handler
+import android.os.Looper
+import android.os.SystemClock
 import android.provider.Settings
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -44,11 +54,76 @@ class NavBarService : AccessibilityService(), SharedPreferences.OnSharedPreferen
             val s = Settings.Secure.getString(c.contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
             return s.split(':').any { ComponentName.unflattenFromString(it)?.packageName == c.packageName }
         }
+
+        /** Switched on but not bound: One UI marks the service crashed after an update and never rebinds it. */
+        fun stuck(c: Context) = isEnabled(c) && !running
+
+        fun canRepair(c: Context) = c.checkSelfPermission(Manifest.permission.WRITE_SECURE_SETTINGS) == PackageManager.PERMISSION_GRANTED
+
+        private var lastRepair = 0L
+
+        /** Rebinds a stuck service by switching it off and on again. Needs WRITE_SECURE_SETTINGS, granted once over adb. */
+        fun repair(c: Context): Boolean {
+            if (!canRepair(c)) return false
+            val now = SystemClock.elapsedRealtime()
+            if (now - lastRepair < 20_000) return true
+            lastRepair = now
+            val cr = c.contentResolver
+            val key = Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+            val me = ComponentName(c, NavBarService::class.java).flattenToString()
+            val others = (Settings.Secure.getString(cr, key) ?: "").split(':')
+                .filter { it.isNotEmpty() && ComponentName.unflattenFromString(it)?.packageName != c.packageName }
+            return runCatching {
+                Settings.Secure.putString(cr, key, others.joinToString(":"))
+                Handler(Looper.getMainLooper()).postDelayed({
+                    runCatching {
+                        Settings.Secure.putString(cr, key, (others + me).joinToString(":"))
+                        Settings.Secure.putInt(cr, Settings.Secure.ACCESSIBILITY_ENABLED, 1)
+                    }
+                }, 800)
+                true
+            }.getOrDefault(false)
+        }
+
+        /** Metro's own page in the accessibility settings, where the switch can be turned off and on. */
+        fun details(c: Context): Intent {
+            val me = ComponentName(c, NavBarService::class.java).flattenToString()
+            val i = Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS").putExtra(Intent.EXTRA_COMPONENT_NAME, me)
+            val target = if (i.resolveActivity(c.packageManager) != null) i else Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            return target.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+
+        private const val CHANNEL = "service"
+        private const val STUCK_ID = 4401
+
+        /** Repairs a stuck service, or tells the user how to switch it back on. */
+        fun check(c: Context) {
+            val nm = c.getSystemService(NotificationManager::class.java)
+            if (!stuck(c) || !(Prefs.actionCenter || Prefs.navBar)) {
+                nm.cancel(STUCK_ID)
+                return
+            }
+            if (repair(c)) return
+            if (nm.getNotificationChannel(CHANNEL) == null) {
+                nm.createNotificationChannel(NotificationChannel(CHANNEL, "servizio Metro", NotificationManager.IMPORTANCE_DEFAULT))
+            }
+            val pi = PendingIntent.getActivity(c, 0, details(c), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            val n = Notification.Builder(c, CHANNEL)
+                .setSmallIcon(R.drawable.ic_stat_metro)
+                .setContentTitle("Centro notifiche Metro fermo")
+                .setContentText("dopo l'aggiornamento: tocca, spegni e riaccendi Metro")
+                .setStyle(Notification.BigTextStyle().bigText("Dopo l'aggiornamento Android ha scollegato Metro. Tocca, spegni e riaccendi \"Metro barra e centro notifiche\". Per farlo fare da solo a Metro vedi Impostazioni Metro › navigazione › riattivazione automatica."))
+                .setContentIntent(pi)
+                .setAutoCancel(true)
+                .build()
+            runCatching { nm.notify(STUCK_ID, n) }
+        }
     }
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         running = true
+        getSystemService(NotificationManager::class.java).cancel(STUCK_ID)
         wm = getSystemService(WindowManager::class.java)
         Prefs.sp.registerOnSharedPreferenceChangeListener(this)
         sync()
@@ -97,7 +172,7 @@ class NavBarService : AccessibilityService(), SharedPreferences.OnSharedPreferen
         val v = NavBarView(this) { action, long ->
             when (action) {
                 0 -> performGlobalAction(if (long) GLOBAL_ACTION_RECENTS else GLOBAL_ACTION_BACK)
-                1 -> performGlobalAction(GLOBAL_ACTION_HOME)
+                1 -> performGlobalAction(if (long) GLOBAL_ACTION_RECENTS else GLOBAL_ACTION_HOME)
                 2 -> startActivity(
                     Intent(this, LauncherActivity::class.java)
                         .putExtra("search", true)
@@ -145,10 +220,10 @@ private class NavBarView(c: Context, private val onAction: (Int, Boolean) -> Uni
     private var down = -1
     private var longFired = false
     private val longRun = Runnable {
-        if (down == 0) {
+        if (down == 0 || down == 1) {
             longFired = true
             performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
-            onAction(0, true)
+            onAction(down, true)
         }
     }
 
@@ -177,7 +252,7 @@ private class NavBarView(c: Context, private val onAction: (Int, Boolean) -> Uni
                 down = (e.x / (width / 3f)).toInt().coerceIn(0, 2)
                 longFired = false
                 performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-                if (down == 0) postDelayed(longRun, ViewConfiguration.getLongPressTimeout().toLong())
+                if (down <= 1) postDelayed(longRun, ViewConfiguration.getLongPressTimeout().toLong())
                 invalidate()
             }
             MotionEvent.ACTION_UP -> {
@@ -194,5 +269,16 @@ private class NavBarView(c: Context, private val onAction: (Int, Boolean) -> Uni
             }
         }
         return true
+    }
+}
+
+/** After an update or a reboot, gives the service time to bind, then repairs it if One UI left it unbound. */
+class ServiceCheckReceiver : BroadcastReceiver() {
+    override fun onReceive(c: Context, i: Intent) {
+        val done = goAsync()
+        Handler(Looper.getMainLooper()).postDelayed({
+            runCatching { NavBarService.check(c.applicationContext) }
+            done.finish()
+        }, 6_000)
     }
 }

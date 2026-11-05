@@ -177,13 +177,24 @@ class SettingsActivity : Activity() {
         }
         button("impostazioni rapide", { "${Prefs.acTiles.size} attive · tocca per aggiungere, togliere e riordinare" }) { QuickDialog(this) { rebuild() }.show() }
         button("permessi centro notifiche", { centerSummary() }) { ensureCenterAccess(true) }
+        button("riattivazione automatica", {
+            if (NavBarService.canRepair(this)) "attiva: se un aggiornamento scollega Metro, si riaccende da solo"
+            else "dopo un aggiornamento Android può scollegare Metro. Per farlo riaccendere da solo serve un comando adb, una volta: tocca per copiarlo"
+        }) {
+            if (!NavBarService.canRepair(this)) {
+                val cmd = "adb shell pm grant $packageName android.permission.WRITE_SECURE_SETTINGS"
+                getSystemService(android.content.ClipboardManager::class.java)
+                    .setPrimaryClip(android.content.ClipData.newPlainText("adb", cmd))
+                Toast.makeText(this, "copiato: $cmd", Toast.LENGTH_LONG).show()
+            }
+        }
         button("prova il centro notifiche", { if (NavBarService.running) "apre il pannello adesso" else "serve \"Metro barra e centro notifiche\" nei servizi di accessibilità" }) {
             val ac = ActionCenter.current
             if (ac != null && Prefs.actionCenter) ac.open() else ensureCenterAccess()
         }
         toggle(
             "barra windows phone",
-            "indietro · start · cerca al posto dei pulsanti di One UI, alla stessa altezza, senza coprire le app. Serve la navigazione a pulsanti: Impostazioni › Display › Barra di navigazione › Pulsanti. Con le gesture la barra resta nascosta.",
+            "indietro · start · cerca al posto dei pulsanti di One UI, alla stessa altezza, senza coprire le app. Tieni premuto indietro o start per il multitasking. Serve la navigazione a pulsanti: Impostazioni › Display › Barra di navigazione › Pulsanti. Con le gesture la barra resta nascosta.",
             { Prefs.navBar },
         ) {
             Prefs.navBar = it
@@ -353,6 +364,7 @@ class SettingsActivity : Activity() {
 
     private fun centerSummary(): String {
         val miss = ArrayList<String>()
+        if (NavBarService.stuck(this)) return "fermo dopo l'aggiornamento · tocca, poi spegni e riaccendi Metro"
         if (!NavBarService.isEnabled(this)) miss += "accessibilità"
         if (!notifEnabled()) miss += "accesso notifiche"
         if (!Settings.System.canWrite(this)) miss += "modifica impostazioni (rotazione, luminosità)"
@@ -362,6 +374,14 @@ class SettingsActivity : Activity() {
     /** Walks through the three grants the action center needs, one screen at a time. */
     private fun ensureCenterAccess(all: Boolean = false) {
         when {
+            NavBarService.stuck(this) -> {
+                if (NavBarService.repair(this)) {
+                    Toast.makeText(this, "riattivo Metro…", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "Android ha scollegato Metro: spegni e riaccendi l'interruttore", Toast.LENGTH_LONG).show()
+                    startActivity(NavBarService.details(this))
+                }
+            }
             !NavBarService.isEnabled(this) -> {
                 Toast.makeText(this, "attiva \"Metro barra e centro notifiche\" in App installate. Se è grigio: Info app › ⋮ › Consenti impostazioni con restrizioni", Toast.LENGTH_LONG).show()
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))

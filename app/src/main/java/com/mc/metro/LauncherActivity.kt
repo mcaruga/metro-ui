@@ -198,6 +198,7 @@ class LauncherActivity : Activity(), TileGrid.Host, AppListPage.Host {
         // Safety net: straighten any tile an interrupted animation left crooked.
         h.postDelayed({ if (!launching && !grid.editing) grid.tileViews().forEach { it.settle() } }, 900)
         Updater.autoCheck(this)
+        h.postDelayed({ if (!isFinishing) NavBarService.check(this) }, 4000)
         if (!Prefs.askedHome && !HomeRole.isDefault(this)) {
             // Once: without this the home gesture still goes to One UI Home.
             Prefs.askedHome = true
